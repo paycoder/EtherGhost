@@ -9,3 +9,4 @@ httpx
 socksio
 chardet
 python-multipart
+packaging
