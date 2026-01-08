@@ -29,6 +29,7 @@ python-multipart = "*"
 ipykernel = "^6.29.0"
 mypy = "^1.8.0"
 pytest = "^9.0"
+pyright = "^1.1.407"
 
 [build-system]
 requires = ["poetry-core"]
