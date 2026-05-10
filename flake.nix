@@ -41,6 +41,7 @@
             pythonPackages.sqlalchemy-utils
             pythonPackages.httpx
             pythonPackages.chardet
+            pythonPackages.pytest
           ];
           shellHook = ''
             poetry install
