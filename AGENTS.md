@@ -46,6 +46,12 @@ poetry build
 
 也支持 PyInstaller 打包为独立可执行文件，见 `build.sh`（Linux）和 `pyinstaller_package.bat`（Windows）。
 
+## 前端构建
+
+前端代码位于 `frontend/` 目录，使用 Vite 构建。构建产物为 `ether_ghost/public/` 目录下的静态文件。
+
+**重要**：修改前端代码后，必须运行 `build.sh` 重新构建，并将构建产物（`ether_ghost/public/`）与前端源码的修改放在同一个 git commit 中提交。不要单独提交构建产物，也不要遗漏构建产物的提交。
+
 ## 主要功能
 
 - **多协议Webshell管理**：PHP一句话、PHP原始、PHP冰蝎、PHP游魂、JSP冰蝎、Linux CMD一句话
