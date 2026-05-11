@@ -23,6 +23,7 @@ from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from uuid import UUID, uuid4
 
 from fastapi import (
+    Depends,
     FastAPI,
     Response,
 )
@@ -45,7 +46,7 @@ from .api.session import router as session_router
 from .api.sessiontype import router as sessiontype_router
 from .api.settings import router as settings_router
 from .api.utils import router as utils_router
-
+from .auth import require_auth
 
 from .utils import const
 
@@ -102,11 +103,11 @@ DIR = Path(__file__).parent
 app = FastAPI(lifespan=lifespan)
 app.mount("/public", StaticFiles(directory=DIR / "public"), name="public")
 app.mount("/assets", StaticFiles(directory=DIR / "public" / "assets"), name="assets")
-app.include_router(connector_router)
-app.include_router(forward_proxy_router)
-app.include_router(session_router)
-app.include_router(sessiontype_router)
-app.include_router(settings_router)
+app.include_router(connector_router, dependencies=[Depends(require_auth)])
+app.include_router(forward_proxy_router, dependencies=[Depends(require_auth)])
+app.include_router(session_router, dependencies=[Depends(require_auth)])
+app.include_router(sessiontype_router, dependencies=[Depends(require_auth)])
+app.include_router(settings_router, dependencies=[Depends(require_auth)])
 app.include_router(utils_router)
 
 
@@ -179,7 +180,7 @@ async def get_session(session_id: UUID):
     return session
 
 
-@app.get("/")
+@app.get("/", dependencies=[Depends(require_auth)])
 async def hello_world():
     """转到主页"""
     return RedirectResponse("/public/index.html")

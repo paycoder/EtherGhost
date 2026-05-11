@@ -12,11 +12,12 @@ from uuid import UUID
 from packaging.version import Version
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from ..utils import const
 from ..core import ServerError
+from ..auth import require_auth
 
 from .base import temp_files
 
@@ -24,11 +25,13 @@ logger = logging.getLogger("main")
 router = APIRouter()
 update_check_lock = asyncio.Lock()
 
+
 def remote_path(filepath: str) -> PurePath:
     """自动猜测传入文件路径的类型为unix/windows, 并实例化成Path对象"""
     if re.match(r"^[a-zA-Z]:[/\\]", filepath):
         return PureWindowsPath(filepath)
     return PurePosixPath(filepath)
+
 
 async def update_info_last():
     """获取上次更新检查结果"""
@@ -48,8 +51,11 @@ async def update_info_last():
     if current_version != update_check_info["current_version"]:
         return None
     if current_version != update_check_info["new_version"]:
-        logger.warning(f"New version available: {current_version} -> {update_check_info['new_version']}")
+        logger.warning(
+            f"New version available: {current_version} -> {update_check_info['new_version']}"
+        )
     return update_check_info
+
 
 async def update_info_fetch():
     """从pypi获取最新版本信息"""
@@ -70,12 +76,15 @@ async def update_info_fetch():
         "new_version": new_version,
     }
     if current_version != update_check_info["new_version"]:
-        logger.warning(f"New version available: {current_version} -> {update_check_info['new_version']}")
+        logger.warning(
+            f"New version available: {current_version} -> {update_check_info['new_version']}"
+        )
     try:
         const.UPDATE_CHECK_FILEPATH.write_text(json.dumps(update_check_info))
     except Exception as exc:
         raise ServerError("无法写入文件") from exc
     return update_check_info
+
 
 # Utils相关路由
 @router.get("/utils/version")
@@ -83,6 +92,7 @@ async def version():
     """获取当前版本"""
     current_version = importlib.metadata.version("ether_ghost")
     return {"code": 0, "data": current_version}
+
 
 @router.get("/utils/lazy_check_update")
 async def lazy_check_update():
@@ -115,6 +125,7 @@ async def lazy_check_update():
         },
     }
 
+
 @router.get("/utils/check_update")
 async def check_update():
     """强制检查更新"""
@@ -129,6 +140,7 @@ async def check_update():
         },
     }
 
+
 @router.get("/utils/background_image")
 async def background_image():
     """获取背景图片"""
@@ -138,6 +150,7 @@ async def background_image():
             return FileResponse(path=filepath)
     raise HTTPException(status_code=404, detail="Image not found")
 
+
 @router.get("/utils/fetch_downloaded_file/{file_id}")
 async def fetch_downloaded_file(file_id: UUID):
     """获取下载的文件"""
@@ -145,6 +158,7 @@ async def fetch_downloaded_file(file_id: UUID):
         raise HTTPException(status_code=404, detail="File not found")
     (filename, filepath) = temp_files[file_id]
     return FileResponse(path=filepath, filename=filename)
+
 
 @router.get("/utils/join_path")
 async def join_path(folder: str, entry: str):
@@ -158,7 +172,8 @@ async def join_path(folder: str, entry: str):
         result = remote_path(folder) / entry
     return {"code": 0, "data": result}
 
-@router.get("/utils/test_proxy")
+
+@router.get("/utils/test_proxy", dependencies=[Depends(require_auth)])
 async def test_proxy(proxy: str, site: str, timeout: int = 10):
     """测试代理"""
     sites = {
