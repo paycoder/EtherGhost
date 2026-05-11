@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pathlib import Path
 import asyncio
 import base64
@@ -30,6 +31,7 @@ logger = logging.getLogger("core.sessions.php_behinder")
 
 PAYLOAD_PATH = Path(__file__).parent / "Payload.java"
 assert PAYLOAD_PATH.exists(), f"Cannot find Payload.java at {Path(__file__).parent}"
+
 
 def behinder_aes(payload: bytes, key: bytes) -> bytes:
     """将给定的payload按照冰蝎的格式进行AES加密"""
@@ -417,7 +419,7 @@ class JSPWebshellBehinderAES:
             BasicInfoEntry(key="Current Directory", value=info["current_directory"]),
             BasicInfoEntry(key="System Version", value=info["system_version"]),
             BasicInfoEntry(key="Java Version", value=info["java_version"]),
-            BasicInfoEntry(key="JSP Location", value=info["jsp_location"])
+            BasicInfoEntry(key="JSP Location", value=info["jsp_location"]),
         ]
 
     async def open_reverse_shell(self, host: str, port: int) -> None:

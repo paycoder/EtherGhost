@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: debian-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if PR is empty
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "Checking if PR has any changes..."
+          bash .gitea/scripts/check_empty_pr.sh
+
+      - name: Check PR body length
+        run: |
+          python3 .gitea/scripts/check_pr_body.py
+
+      - name: Check if branch is behind main
+        run: |
+          echo "Checking if branch is behind main..."
+          bash .gitea/scripts/check_branch_behind.sh
+
+      - name: Setup Python
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-pip curl tmux
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+
+      - name: Install dependencies
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv pip install -e . --system
+          uv pip install black pytest --system
+
+      - name: Check PR references issue
+        run: |
+          echo "Checking if PR references an issue and has no competing PRs..."
+          python3 .gitea/scripts/check_pr_issue.py
+
+      - name: Check PR for missing tests
+        run: |
+          echo "Checking if PR modifies ether_ghost/ without adding tests..."
+          bash .gitea/scripts/check_pr_tests.sh
+
+      - name: Run unittests
+        env:
+          PYTHONPATH: $PWD
+        run: |
+          if [ -d "tests/unittests" ]; then
+            echo "Running unittest discover -s tests/unittests"
+            python3 -m unittest discover -s tests/unittests 2> >(tee /tmp/unittest_stderr.txt)
+          else
+            echo "No tests/unittests directory found, skipping unittests."
+            touch /tmp/unittest_stderr.txt
+          fi
+
+      # - name: Run pyright
+      #   run: |
+      #     export PATH="$HOME/.local/bin:$PATH"
+      #     uv pip install pyright --system
+      #     pyright ether_ghost/
+
+      - name: Run black
+        run: |
+          changed_py_files=$(git diff --name-only --diff-filter=d origin/main..HEAD | grep '\.py$' || true)
+          if [ -n "$changed_py_files" ]; then
+            echo "Running black check on changed Python files:"
+            echo "$changed_py_files"
+            black --check $changed_py_files
+          else
+            echo "No Python files changed in this PR, skipping black check"
+          fi
+
+      - name: Check for unittest warnings
+        run: |
+          if grep -P ' [A-Za-z0-9_]+Warning' /tmp/unittest_stderr.txt; then
+            echo "Warnings found in unittest stderr, please fix it"
+            exit 1
+          fi
+
+      - name: Check for RuntimeError in unittest output
+        run: |
+          if grep -P 'RuntimeError.*cancel scope.*different task' /tmp/unittest_stderr.txt; then
+            echo "RuntimeError from exit stack found in unittest output, please fix it"
+            exit 1
+          fi
+
+      - name: Check for cast function calls
+        run: |
+          echo "Checking for cast/typing.cast function calls in Python files..."
+          python3 .gitea/scripts/check_cast_usage.py
+
+      - name: Check for asyncio.create_task usage
+        run: |
+          echo "Checking for asyncio.create_task usage in Python files..."
+          python3 .gitea/scripts/check_create_task_usage.py
+
+      - name: Check for Any/object type annotations
+        run: |
+          echo "Checking for Any/object type annotations in function parameters..."
+          python3 .gitea/scripts/check_any_object_type_annotations.py
+
+      - name: Check for None/empty default arguments
+        run: |
+          echo "Checking for None/empty default arguments in function parameters..."
+          python3 .gitea/scripts/check_none_default_args.py
+
+      - name: Check for new Python comments
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          echo "Checking for new # comments in Python files..."
+          python3 .gitea/scripts/check_python_comments.py
+
+      - name: Check for garbage code patterns
+        run: |
+          echo "Checking for garbage code patterns (hasattr/getattr/setattr/try except)..."
+          bash .gitea/scripts/check_git_diff.sh
+
+      - name: Check for black overformatting
+        run: |
+          echo "Checking if black is overformatting files..."
+          python3 .gitea/scripts/check_black_overformat.py
+
+      - name: Check commit count
+        run: |
+          echo "Checking if commit count is reasonable..."
+          bash .gitea/scripts/check_commit_count.sh
+
+      - name: Check for emoji in commit messages
+        run: |
+          echo "Checking for emoji in commit messages..."
+          python3 .gitea/scripts/check_emoji.py
+
+      - name: Check for emoji in changed code files
+        run: |
+          echo "Checking for emoji in changed Python code files..."
+          python3 .gitea/scripts/check_code_emoji.py
