@@ -62,6 +62,8 @@
   - session 暂存 payload
   - 防流量重放
   - RSA+AES 加密
+- 认证功能
+  - 支持为API设置认证用户名和密码，如`--auth 'admin:1919810'`
 
 ## 安装使用
 

@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument("--port", type=int, help="Port to use", default=8022)
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser")
     parser.add_argument(
-        "--auth", help="HTTP Basic Auth (username:password)", default=None
+        "--auth", help="HTTP Basic Auth (username:password) like admin:1919810", default=None
     )
 
     return parser.parse_args()
