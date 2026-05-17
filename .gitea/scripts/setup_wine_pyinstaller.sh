@@ -11,14 +11,16 @@ PYTHON_VERSION="3.10.11"
 PYTHON_VER_NO_DOT="310"
 
 for i in $(seq 1 5); do
-    apt-get update -qy && apt-get install -y --no-install-recommends --fix-missing \
+    apt-get update -qy
+    apt-get --fix-broken install -y
+    apt-get install -y --no-install-recommends --fix-missing \
         wine winbind cabextract wget xvfb && break
     echo "apt-get attempt $i failed, retrying..."
     sleep 10
 done
 
-if ! command -v Xvfb &>/dev/null; then
-    echo "ERROR: apt-get failed after 5 retries"
+if ! command -v wineboot &>/dev/null; then
+    echo "ERROR: wine installation failed after 5 retries"
     exit 1
 fi
 

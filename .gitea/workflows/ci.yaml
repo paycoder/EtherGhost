@@ -179,8 +179,36 @@ jobs:
         env:
           GITEA_TOKEN: ${{ github.token }}
         run: |
-          curl -X PUT \
-            "${{ github.server_url }}/api/v1/packages/${{ github.repository_owner }}/generic/ether-ghost/build-${{ github.sha }}/ether_ghost.exe" \
+          echo "Uploading to repo: ${{ github.repository }}"
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases" \
             -H "Authorization: token ${{ github.token }}" \
-            --upload-file dist/ether_ghost.exe
-          echo "Uploaded to package registry: ether-ghost/build-${{ github.sha }}"
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"ci-build-${{ github.sha }}\",\"name\":\"CI Build ${{ github.sha }}\",\"target_commitish\":\"${{ github.sha }}\",\"draft\":false,\"prerelease\":true}")
+          HTTP_CODE=$(echo "$RESPONSE" | grep -oP 'HTTP_CODE:\K[0-9]+' | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response: $BODY"
+          if [ "$HTTP_CODE" -ge 400 ] || [ -z "$HTTP_CODE" ]; then
+            echo "ERROR: Failed to create release (HTTP $HTTP_CODE)"
+            echo "Token length: ${#${{ github.token }}}"
+            exit 1
+          fi
+          RELEASE_ID=$(echo "$BODY" | grep -oP '"id":\s*\K[0-9]+' | head -1)
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: Could not extract release ID"
+            exit 1
+          fi
+          echo "Created release ID: $RELEASE_ID"
+          UPLOAD_RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=ether_ghost.exe" \
+            -H "Authorization: token ${{ github.token }}" \
+            --upload-file dist/ether_ghost.exe)
+          UPLOAD_CODE=$(echo "$UPLOAD_RESPONSE" | grep -oP 'HTTP_CODE:\K[0-9]+' | tail -1)
+          echo "Upload HTTP Status: $UPLOAD_CODE"
+          if [ "$UPLOAD_CODE" -ge 400 ] || [ -z "$UPLOAD_CODE" ]; then
+            echo "ERROR: Failed to upload asset"
+            echo "$UPLOAD_RESPONSE" | sed '/HTTP_CODE:/d'
+            exit 1
+          fi
+          echo "Download URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/ci-build-${{ github.sha }}/ether_ghost.exe"
