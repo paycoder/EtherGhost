@@ -1,0 +1,835 @@
+diff --git a/frontend/src/components/pages/BatchCommandPage.vue b/frontend/src/components/pages/BatchCommandPage.vue
+new file mode 100644
+index 0000000..08e0124
+--- /dev/null
++++ b/frontend/src/components/pages/BatchCommandPage.vue
+@@ -0,0 +1,692 @@
++<script setup>
++import { ref, onMounted } from "vue";
++import { useRoute } from "vue-router";
++import axios from "axios";
++import IconFileDownload from "@/components/icons/iconFileDownload.vue";
++import IconRun from "@/components/icons/iconRun.vue";
++import StatusIndicator from "@/components/StatusIndicator.vue";
++import WebshellTypeDot from "@/components/WebshellTypeDot.vue";
++import { addPopup, getCurrentApiUrl, parseDataOrPopupError, getDataOrPopupError } from "@/assets/utils";
++const route = useRoute();
++const webshells = ref([]);
++const commandInput = ref("");
++const isExecuting = ref(false);
++async function loadSelectedWebshells() {
++  try {
++    const selectedParam = route.query.selected;
++    if (!selectedParam) {
++      webshells.value = [];
++      return;
++    }
++    const selectedIds = String(selectedParam).split(' ').filter(id => id.trim());
++    if (selectedIds.length === 0) {
++      webshells.value = [];
++      return;
++    }
++    let allSessions = await getDataOrPopupError("/session");
++    const filtered = allSessions
++      .filter(session => selectedIds.includes(session.id));
++    const mapped = filtered.map(session => ({
++      id: session.id,
++      name: session.name,
++      type: session.type,
++      readable_type: session.readable_type || session.type,
++      location: session.location || "未知位置",
++      note: session.note || "",
++      status: "pending",
++      result: "等待执行命令...",
++      timestamp: ""
++    }));
++    webshells.value = mapped;
++  } catch (error) {
++    addPopup("red", "错误", "加载选中webshell数据失败喵~");
++    webshells.value = [];
++  }
++}
++// 执行命令
++async function executeCommand() {
++  if (!commandInput.value.trim()) {
++    addPopup("red", "错误", "请输入要执行的命令喵~");
++    return;
++  }
++  isExecuting.value = true;
++  const command = commandInput.value.trim();
++  // 更新所有webshell状态为执行中
++  for (const webshell of webshells.value) {
++    webshell.status = 'executing';
++    webshell.result = '执行中...';
++    webshell.timestamp = '';
++  }
++  try {
++    const executionPromises = webshells.value.map(async (webshell) => {
++      try {
++        const response = await axios.get(
++          `${getCurrentApiUrl()}/session/${webshell.id}/execute_cmd`,
++          { params: { cmd: command } }
++        );
++        const result = parseDataOrPopupError(response);
++        webshell.status = 'success';
++        webshell.result = result || "无输出"; // result是字符串输出
++        webshell.timestamp = ""; // 后端未提供执行时间
++        webshell.return_code = 0; // 默认成功返回码为0
++      } catch (error) {
++        webshell.status = 'error';
++        webshell.result = error.message || "网络请求失败";
++        webshell.timestamp = "";
++        webshell.return_code = 1;
++      }
++    });
++    // 等待所有执行完成
++    await Promise.all(executionPromises);
++  } catch (error) {
++    addPopup("red", "执行失败", "批量命令执行过程中发生错误喵~");
++  } finally {
++    isExecuting.value = false;
++  }
++}
++// 导出结果
++function exportResults() {
++  const exportData = {
++    command: commandInput.value,
++    timestamp: new Date().toISOString(),
++    webshells: webshells.value.map(ws => ({
++      id: ws.id,
++      name: ws.name,
++      type: ws.type,
++      status: ws.status,
++      result: ws.result,
++      timestamp: ws.timestamp,
++      return_code: ws.return_code,
++      location: ws.location
++    }))
++  };
++  const dataStr = JSON.stringify(exportData, null, 2);
++  const dataBlob = new Blob([dataStr], { type: 'application/json' });
++  const downloadUrl = URL.createObjectURL(dataBlob);
++  const link = document.createElement('a');
++  link.href = downloadUrl;
++  link.download = `batch-command-results-${Date.now()}.json`;
++  document.body.appendChild(link);
++  link.click();
++  document.body.removeChild(link);
++  URL.revokeObjectURL(downloadUrl);
++  addPopup("green", "导出成功", "执行结果已导出为JSON文件喵~");
++}
++// 复制到剪贴板
++function copyToClipboard(text) {
++  navigator.clipboard.writeText(text).then(() => {
++    addPopup("green", "复制成功", "内容已复制到剪贴板喵~");
++  }).catch(err => {
++    addPopup("red", "复制失败", "无法复制到剪贴板喵~");
++  });
++}
++// 确保类型显示正确
++function ensureTypeDisplay() {
++  // 确保每个webshell都有readable_type
++  for (const webshell of webshells.value) {
++    if (!webshell.readable_type) {
++      webshell.readable_type = webshell.type;
++    }
++  }
++}
++onMounted(() => {
++  setTimeout(() => {
++    loadSelectedWebshells();
++    ensureTypeDisplay();
++  }, 100);
++});
++function resetStatus() {
++  for (const webshell of webshells.value) {
++    webshell.status = 'pending';
++    webshell.result = '等待执行命令...';
++    webshell.timestamp = '';
++    webshell.return_code = null;
++  }
++  commandInput.value = '';
++}
++</script>
++<template>
++  <div class="batch-command-page">
++    <div class="page-header">
++      <h1 class="page-title">批量执行命令</h1>
++      <div class="page-subtitle">选择多个webshell并发执行相同命令喵~</div>
++    </div>
++    <div class="main-scroll-area">
++      <div class="webshell-list-header">
++        <div class="header-status">状态</div>
++        <div class="header-info">WebShell信息</div>
++        <div class="header-result">执行结果</div>
++      </div>
++      <div class="webshell-list">
++        <div v-if="webshells.length === 0" class="empty-state">
++          <div class="empty-message">未选中任何webshell喵~</div>
++        </div>
++        <div v-else>
++          <div class="webshell-row" v-for="webshell in webshells" :key="webshell.id" :class="webshell.status">
++            <!-- 状态指示区 -->
++            <div class="status-area">
++              <StatusIndicator :status="webshell.status" />
++            </div>
++            <!-- WebShell信息区 -->
++            <div class="info-area">
++              <div class="info-main">
++                <div class="webshell-name">{{ webshell.name }}</div>
++                <WebshellTypeDot :type="webshell.type" />
++                <div class="webshell-type-label">{{ webshell.readable_type || webshell.type }}</div>
++              </div>
++              <div class="info-details">
++                <span class="webshell-note" v-if="webshell.note">{{ webshell.note }}</span>
++                <span class="webshell-location" v-if="webshell.location">{{ webshell.location }}</span>
++              </div>
++            </div>
++            <!-- 结果区 -->
++            <div class="result-area">
++              <div class="result-content" :class="webshell.status">
++                <div class="output-section" v-if="webshell.status !== 'pending' && webshell.status !== 'executing'">
++                  <div class="output-text" @click="copyToClipboard(webshell.result)" title="点击复制">{{ webshell.result }}
++                  </div>
++                </div>
++                <div class="status-text" v-else>{{ webshell.status === 'executing' ? '执行中...' : '等待执行...' }}</div>
++                <div class="meta-section" v-if="webshell.status !== 'pending' && webshell.status !== 'executing'">
++                  <span class="meta-item return-code" :class="webshell.return_code === 0 ? 'success' : 'error'">
++                    <span class="meta-icon">{{ webshell.return_code === 0 ? '✓' : '✗' }}</span>
++                    <span class="meta-text">返回码: {{ webshell.return_code }}</span>
++                  </span>
++                  <span class="meta-separator" v-if="webshell.timestamp">•</span>
++                  <span class="meta-item timestamp" v-if="webshell.timestamp">
++                    <span class="meta-icon">⏱</span>
++                    <span class="meta-text">{{ webshell.timestamp }}</span>
++                  </span>
++                </div>
++              </div>
++            </div>
++          </div>
++        </div>
++      </div>
++    </div>
++    <div class="command-footer">
++      <div class="command-input-wrapper">
++        <div class="input-icon">$</div>
++        <input v-model="commandInput" type="text" class="command-input" placeholder="输入要批量执行的命令，例如：ls -la /tmp"
++          :disabled="isExecuting" />
++      </div>
++      <div class="action-buttons">
++        <button class="action-button execute-button" @click="executeCommand"
++          :disabled="isExecuting || !commandInput.trim()" title="执行命令">
++          <IconRun class="button-icon" />
++        </button>
++        <button class="action-button export-button" @click="exportResults"
++          :disabled="webshells.every(ws => ws.status === 'pending')" title="导出结果">
++          <IconFileDownload class="button-icon" />
++        </button>
++        <button class="action-button reset-button" @click="resetStatus" :disabled="isExecuting" title="重置状态">
++          <span class="reset-icon">↺</span>
++        </button>
++      </div>
++    </div>
++  </div>
++</template>
++<style scoped>
++.batch-command-page {
++  display: flex;
++  flex-direction: column;
++  height: 100%;
++  width: 100%;
++  padding: 20px 24px;
++  box-sizing: border-box;
++  background-color: var(--background-color-1);
++  color: var(--font-color-primary);
++  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
++}
++
++.page-header {
++  margin-bottom: 28px;
++}
++
++.page-title {
++  font-size: 24px;
++  font-weight: 600;
++  color: var(--font-color-primary);
++  margin: 0 0 4px 0;
++  letter-spacing: -0.2px;
++}
++
++.page-subtitle {
++  font-size: 13px;
++  color: var(--font-color-secondary);
++  opacity: 0.7;
++  margin: 0;
++}
++
++.main-scroll-area {
++  flex: 1;
++  overflow-y: auto;
++  margin-bottom: 24px;
++  border: 1px solid var(--border-color);
++  border-radius: 14px;
++  background-color: var(--background-color-2);
++  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
++}
++
++.webshell-list-header {
++  display: flex;
++  align-items: center;
++  padding: 16px 20px;
++  border-bottom: 1px solid var(--border-color);
++  background-color: rgba(0, 0, 0, 0.03);
++  font-size: 13px;
++  font-weight: 600;
++  color: var(--font-color-secondary);
++  text-transform: uppercase;
++  letter-spacing: 0.5px;
++}
++
++.header-status {
++  width: 100px;
++  padding-left: 8px;
++}
++
++.header-info {
++  flex: 1;
++}
++
++.header-result {
++  flex: 2;
++  text-align: right;
++  padding-right: 12px;
++}
++
++.webshell-list {
++  display: flex;
++  flex-direction: column;
++}
++
++.webshell-row {
++  display: flex;
++  align-items: center;
++  padding: 16px 20px;
++  border-bottom: 1px solid var(--border-color);
++  transition: all 0.25s ease;
++  min-height: 68px;
++}
++
++.webshell-row:hover {
++  background-color: var(--background-color-3);
++}
++
++.webshell-row:last-child {
++  border-bottom: none;
++}
++
++.status-area {
++  width: 100px;
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  padding: 0 8px;
++}
++
++.info-area {
++  flex: 1;
++  padding: 0 16px;
++  border-right: 1px solid var(--border-color);
++  margin-right: 16px;
++  min-height: 48px;
++  display: flex;
++  flex-direction: column;
++  justify-content: center;
++}
++
++.info-main {
++  display: flex;
++  align-items: center;
++  margin-bottom: 8px;
++}
++
++.webshell-name {
++  font-size: 16px;
++  font-weight: 600;
++  color: var(--font-color-primary);
++  margin-right: 12px;
++  letter-spacing: -0.2px;
++}
++
++.webshell-type-label {
++  font-size: 12px;
++  color: var(--font-color-secondary);
++  font-weight: 500;
++  letter-spacing: 0.2px;
++  opacity: 0.8;
++}
++
++.info-details {
++  font-size: 13px;
++  color: var(--font-color-secondary);
++  display: flex;
++  gap: 12px;
++}
++
++.webshell-note {
++  opacity: 0.9;
++}
++
++.webshell-location {
++  opacity: 0.7;
++}
++
++.result-area {
++  flex: 2;
++  padding: 0 12px;
++  min-height: 48px;
++  display: flex;
++  flex-direction: column;
++  justify-content: center;
++}
++
++.result-content {
++  text-align: right;
++}
++
++.output-text {
++  font-size: 13px;
++  font-weight: 500;
++  color: var(--font-color-primary);
++  margin-bottom: 2px;
++  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
++  word-break: break-all;
++  line-height: 1.4;
++  cursor: pointer;
++  transition: all 0.2s ease;
++  background-color: var(--background-color-3);
++  padding: 6px 12px;
++  border-radius: 20px;
++}
++
++.webshell-row.success .output-text {
++  background-color: rgba(76, 175, 80, 0.15);
++  color: #4CAF50;
++}
++
++.webshell-row.error .output-text {
++  background-color: rgba(244, 67, 54, 0.15);
++  color: #F44336;
++}
++
++.output-text:hover {
++  background-color: var(--background-color-2);
++  transform: scale(1.02);
++}
++
++.status-text {
++  font-size: 14px;
++  font-weight: 500;
++  color: var(--font-color-secondary);
++  margin-bottom: 4px;
++  font-family: 'SF Mono', 'Monaco', 'Menlo', monospace;
++  word-break: break-all;
++  line-height: 1.4;
++  display: inline-block;
++  padding: 4px 12px;
++  border-radius: 20px;
++  background-color: var(--background-color-3);
++}
++
++.webshell-row.executing .status-text {
++  color: #FF9800;
++  background-color: rgba(255, 152, 0, 0.15);
++  animation: pulse 1.5s infinite;
++}
++
++@keyframes pulse {
++  0% {
++    opacity: 0.8;
++  }
++
++  50% {
++    opacity: 1;
++  }
++
++  100% {
++    opacity: 0.8;
++  }
++}
++
++.webshell-row.success .output-text {
++  color: var(--green);
++}
++
++.webshell-row.error .output-text {
++  color: var(--red);
++}
++
++.meta-section {
++  display: flex;
++  justify-content: flex-end;
++  align-items: center;
++  gap: 8px;
++  margin-top: 6px;
++}
++
++.meta-item {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  font-size: 12px;
++  padding: 2px 8px;
++  border-radius: 4px;
++  font-family: 'SF Mono', monospace;
++}
++
++.return-code.success {
++  color: #4CAF50 !important;
++  background-color: rgba(76, 175, 80, 0.15) !important;
++}
++
++.return-code.error {
++  color: #F44336 !important;
++  background-color: rgba(244, 67, 54, 0.15) !important;
++}
++
++.timestamp {
++  color: var(--font-color-secondary) !important;
++  background-color: var(--background-color-3) !important;
++}
++
++.meta-icon {
++  font-size: 10px;
++  opacity: 0.9;
++}
++
++.meta-text {
++  font-weight: 500;
++  color: inherit;
++}
++
++.meta-separator {
++  color: var(--font-color-secondary);
++  opacity: 0.5;
++}
++
++.command-footer {
++  background-color: var(--background-color-2);
++  border-radius: 14px;
++  padding: 20px 24px;
++  display: flex;
++  align-items: center;
++  gap: 20px;
++  border: 1px solid var(--border-color);
++  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
++}
++
++.command-input-wrapper {
++  flex: 1;
++  display: flex;
++  align-items: center;
++  background-color: var(--background-color-3);
++  border-radius: 10px;
++  overflow: hidden;
++  border: 1px solid var(--border-color);
++  transition: all 0.3s ease;
++}
++
++.command-input-wrapper:focus-within {
++  border-color: var(--green);
++  box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.2);
++  background-color: var(--background-color-2);
++}
++
++.input-icon {
++  padding: 0 16px;
++  font-size: 16px;
++  font-weight: 600;
++  color: var(--green);
++  font-family: 'SF Mono', monospace;
++  background-color: rgba(76, 175, 80, 0.1);
++  height: 48px;
++  display: flex;
++  align-items: center;
++  border-right: 1px solid var(--border-color);
++}
++
++.command-input {
++  flex: 1;
++  padding: 0 16px;
++  height: 48px;
++  border: none;
++  background: transparent;
++  color: var(--font-color-primary);
++  font-size: 15px;
++  font-family: 'SF Mono', monospace;
++  outline: none;
++}
++
++.command-input::placeholder {
++  color: var(--font-color-secondary);
++  opacity: 0.6;
++}
++
++.action-buttons {
++  display: flex;
++  gap: 12px;
++}
++
++.action-button {
++  height: 40px;
++  padding: 0 16px;
++  border-radius: 20px;
++  border: none;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  font-size: 14px;
++  font-weight: 500;
++  cursor: pointer;
++  transition: all 0.2s ease;
++}
++
++.action-button:disabled {
++  opacity: 0.5;
++  cursor: not-allowed;
++  transform: none !important;
++  box-shadow: none !important;
++}
++
++.execute-button {
++  background-color: var(--green);
++  color: white;
++  border: none;
++  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
++}
++
++.execute-button:hover:not(:disabled) {
++  background-color: #66BB6A;
++  box-shadow: 0 6px 16px rgba(76, 175, 80, 0.4);
++  transform: translateY(-2px);
++}
++
++.execute-button:active:not(:disabled) {
++  transform: translateY(0);
++}
++
++.export-button {
++  background-color: transparent;
++  color: var(--green);
++  border: 1px solid var(--green);
++}
++
++.export-button:hover:not(:disabled) {
++  background-color: rgba(76, 175, 80, 0.1);
++  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
++}
++
++.reset-button {
++  background-color: transparent;
++  color: var(--font-color-secondary);
++  border: 1px solid var(--border-color);
++}
++
++.reset-button:hover:not(:disabled) {
++  background-color: rgba(244, 67, 54, 0.1);
++  color: var(--red);
++  border-color: var(--red);
++  box-shadow: 0 4px 12px rgba(244, 67, 54, 0.2);
++}
++
++.button-icon {
++  width: 20px;
++  height: 20px;
++  stroke: currentColor;
++}
++
++.execute-button .button-icon {
++  stroke: white;
++}
++
++.reset-icon {
++  font-size: 16px;
++  font-weight: 300;
++}
++
++.button-text {
++  letter-spacing: 0.3px;
++}
++
++.empty-state {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  padding: 80px 20px;
++  text-align: center;
++  color: var(--font-color-secondary);
++}
++
++.empty-message {
++  font-size: 16px;
++  margin-bottom: 20px;
++  opacity: 0.8;
++}
++
++.empty-button {
++  background-color: var(--green);
++  color: white;
++  border: none;
++  border-radius: 20px;
++  padding: 12px 24px;
++  font-size: 14px;
++  font-weight: 500;
++  cursor: pointer;
++  transition: all 0.2s ease;
++  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
++}
++
++.empty-button:hover {
++  background-color: #66BB6A;
++  box-shadow: 0 6px 16px rgba(76, 175, 80, 0.4);
++  transform: translateY(-2px);
++}
++
++.empty-button:active {
++  transform: translateY(0);
++}
++</style>
+\ No newline at end of file
+diff --git a/frontend/src/utils/batchOperations.js b/frontend/src/utils/batchOperations.js
+new file mode 100644
+index 0000000..8209fce
+--- /dev/null
++++ b/frontend/src/utils/batchOperations.js
+@@ -0,0 +1,130 @@
++import { addPopup, parseDataOrPopupError, getCurrentApiUrl } from "@/assets/utils";
++import axios from "axios";
++
++/**
++ * 初始化批量操作状态
++ * @param {Array} sessionIds - 会话ID数组
++ * @param {Object} batchOperationStatus - 批量操作状态对象
++ */
++export function initBatchOperationStatus(sessionIds, batchOperationStatus) {
++  for (const sessionId of sessionIds) {
++    batchOperationStatus[sessionId] = 'pending'
++  }
++}
++
++/**
++ * 清理批量操作状态
++ * @param {Object} batchOperationStatus - 批量操作状态对象
++ * @param {Object} isBatchOperating - 是否正在批量操作的ref
++ * @param {Function} exitMultiSelectMode - 退出多选模式函数
++ * @param {Set} selectedSessionIds - 选中的会话ID集合
++ */
++export function cleanupBatchOperation(batchOperationStatus, isBatchOperating, exitMultiSelectMode, selectedSessionIds) {
++  Object.keys(batchOperationStatus).forEach(key => {
++    delete batchOperationStatus[key]
++  })
++  isBatchOperating.value = false
++  
++  if (selectedSessionIds.size === 0) {
++    exitMultiSelectMode()
++  }
++}
++
++/**
++ * 批量打印到console（演示功能）
++ * @param {Array} sessionIds - 会话ID数组
++ * @param {Array} sessions - 会话数组
++ * @param {Object} batchOperationStatus - 批量操作状态对象
++ * @param {Object} isBatchOperating - 是否正在批量操作的ref
++ * @param {Function} exitMultiSelectMode - 退出多选模式函数
++ * @param {Set} selectedSessionIds - 选中的会话ID集合
++ */
++export async function batchPrintToConsole(sessionIds, sessions, batchOperationStatus, isBatchOperating, exitMultiSelectMode, selectedSessionIds) {
++  if (sessionIds.length === 0) {
++    addPopup("red", "错误", "没有选中任何webshell")
++    return
++  }
++
++  isBatchOperating.value = true
++  
++  initBatchOperationStatus(sessionIds, batchOperationStatus)
++
++  for (const sessionId of sessionIds) {
++    await new Promise(resolve => setTimeout(resolve, 500))
++    
++    const isSuccess = Math.random() > 0.3
++    batchOperationStatus[sessionId] = isSuccess ? 'success' : 'error'
++    
++    const session = sessions.find(s => s.id === sessionId)
++    console.log(`批量操作: ${session?.name || sessionId}`)
++  }
++
++  setTimeout(() => {
++    cleanupBatchOperation(batchOperationStatus, isBatchOperating, exitMultiSelectMode, selectedSessionIds)
++  }, 3000)
++}
++
++/**
++ * 批量测试webshell
++ * @param {Array} sessionIds - 会话ID数组
++ * @param {Array} sessions - 会话数组
++ * @param {Object} batchOperationStatus - 批量操作状态对象
++ * @param {Object} isBatchOperating - 是否正在批量操作的ref
++ * @param {Function} exitMultiSelectMode - 退出多选模式函数
++ * @param {Set} selectedSessionIds - 选中的会话ID集合
++ */
++export async function batchTestWebshell(sessionIds, sessions, batchOperationStatus, isBatchOperating, exitMultiSelectMode, selectedSessionIds) {
++  if (sessionIds.length === 0) {
++    addPopup("red", "错误", "没有选中任何webshell")
++    return
++  }
++
++  isBatchOperating.value = true
++  
++  // 初始化状态
++  initBatchOperationStatus(sessionIds, batchOperationStatus)
++
++  try {
++    // 并发测试所有选中的webshell
++    const promises = sessionIds.map(async (sessionId) => {
++      const session = sessions.find(s => s.id === sessionId)
++      if (!session) {
++        batchOperationStatus[sessionId] = 'error'
++        return
++      }
++      
++      try {
++        // 调用后端测试API - 需要发送完整的session_info结构
++        const sessionInfo = {
++          session_id: session.id,
++          name: session.name,
++          type: session.type,
++          url: session.url,
++          password: session.password,
++          comment: session.comment,
++          extra_data: session.extra_data || {},
++        }
++        
++        const response = await axios.post(`${getCurrentApiUrl()}/test_webshell`, sessionInfo)
++        const result = parseDataOrPopupError(response)
++        
++        if (result && result.success) {
++          batchOperationStatus[sessionId] = 'success'
++        } else {
++          batchOperationStatus[sessionId] = 'error'
++        }
++      } catch (error) {
++        console.error(`测试webshell ${sessionId} 失败:`, error)
++        batchOperationStatus[sessionId] = 'error'
++      }
++    })
++    
++    // 等待所有测试完成
++    await Promise.allSettled(promises)
++  } finally {
++    // 所有操作完成，等待三秒
++    setTimeout(() => {
++      cleanupBatchOperation(batchOperationStatus, isBatchOperating, exitMultiSelectMode, selectedSessionIds)
++    }, 3000)
++  }
++}

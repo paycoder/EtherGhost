@@ -1,0 +1,380 @@
+diff --git a/build.sh b/build.sh
+deleted file mode 100644
+index 90b81e2..0000000
+--- a/build.sh
++++ /dev/null
+@@ -1,6 +0,0 @@
+-cd frontend/
+-npm run build
+-rm ../ether_ghost/public -rf
+-mv dist ../ether_ghost/public
+-cd ../ether_ghost
+-# TODO: build etherGhost packages
+diff --git a/flake.lock b/flake.lock
+index 7066ac4..a4e1df1 100644
+--- a/flake.lock
++++ b/flake.lock
+@@ -5,11 +5,11 @@
+         "systems": "systems"
+       },
+       "locked": {
+-        "lastModified": 1710146030,
+-        "narHash": "sha256-SZ5L6eA7HJ/nmkzGG7/ISclqe6oZdOZTNoesiInkXPQ=",
++        "lastModified": 1731533236,
++        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+         "owner": "numtide",
+         "repo": "flake-utils",
+-        "rev": "b1d9ab70662946ef0850d488da1c9019f3a9752a",
++        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+         "type": "github"
+       },
+       "original": {
+@@ -23,11 +23,11 @@
+         "systems": "systems_2"
+       },
+       "locked": {
+-        "lastModified": 1710146030,
+-        "narHash": "sha256-SZ5L6eA7HJ/nmkzGG7/ISclqe6oZdOZTNoesiInkXPQ=",
++        "lastModified": 1726560853,
++        "narHash": "sha256-X6rJYSESBVr3hBoH0WbKE5KvhPU5bloyZ2L4K60/fPQ=",
+         "owner": "numtide",
+         "repo": "flake-utils",
+-        "rev": "b1d9ab70662946ef0850d488da1c9019f3a9752a",
++        "rev": "c1dfcf08411b08f6b8615f7d8971a2bfa81d5e8a",
+         "type": "github"
+       },
+       "original": {
+@@ -44,11 +44,11 @@
+         ]
+       },
+       "locked": {
+-        "lastModified": 1703863825,
+-        "narHash": "sha256-rXwqjtwiGKJheXB43ybM8NwWB8rO2dSRrEqes0S7F5Y=",
++        "lastModified": 1729742964,
++        "narHash": "sha256-B4mzTcQ0FZHdpeWcpDYPERtyjJd/NIuaQ9+BV1h+MpA=",
+         "owner": "nix-community",
+         "repo": "nix-github-actions",
+-        "rev": "5163432afc817cf8bd1f031418d1869e4c9d5547",
++        "rev": "e04df33f62cdcf93d73e9a04142464753a16db67",
+         "type": "github"
+       },
+       "original": {
+@@ -59,11 +59,11 @@
+     },
+     "nixpkgs": {
+       "locked": {
+-        "lastModified": 1718333206,
+-        "narHash": "sha256-eilG1IDuHUiTCiE7gx+UbtbRPjSiEi600zg/eZeDIuw=",
++        "lastModified": 1745991046,
++        "narHash": "sha256-+WiKX2uUkuWrkUdfy8XP0Lic2qN7h3pH+tWn1DfTfFg=",
+         "owner": "NixOS",
+         "repo": "nixpkgs",
+-        "rev": "1740b0f87b1c4ff0ed5a499c0109fb71e7b6fd78",
++        "rev": "920a79ee9b49febd7a8b7251e210aeee9c06b644",
+         "type": "github"
+       },
+       "original": {
+@@ -84,11 +84,11 @@
+         "treefmt-nix": "treefmt-nix"
+       },
+       "locked": {
+-        "lastModified": 1718285706,
+-        "narHash": "sha256-DScsBM+kZvxOva7QegfdtleebMXh30XPxDQr/1IGKYo=",
++        "lastModified": 1743690424,
++        "narHash": "sha256-cX98bUuKuihOaRp8dNV1Mq7u6/CQZWTPth2IJPATBXc=",
+         "owner": "nix-community",
+         "repo": "poetry2nix",
+-        "rev": "a5be1bbbe0af0266147a88e0ec43b18c722f2bb9",
++        "rev": "ce2369db77f45688172384bbeb962bc6c2ea6f94",
+         "type": "github"
+       },
+       "original": {
+@@ -144,8 +144,9 @@
+         "type": "github"
+       },
+       "original": {
+-        "id": "systems",
+-        "type": "indirect"
++        "owner": "nix-systems",
++        "repo": "default",
++        "type": "github"
+       }
+     },
+     "treefmt-nix": {
+@@ -156,11 +157,11 @@
+         ]
+       },
+       "locked": {
+-        "lastModified": 1717850719,
+-        "narHash": "sha256-npYqVg+Wk4oxnWrnVG7416fpfrlRhp/lQ6wQ4DHI8YE=",
++        "lastModified": 1730120726,
++        "narHash": "sha256-LqHYIxMrl/1p3/kvm2ir925tZ8DkI0KA10djk8wecSk=",
+         "owner": "numtide",
+         "repo": "treefmt-nix",
+-        "rev": "4fc1c45a5f50169f9f29f6a98a438fb910b834ed",
++        "rev": "9ef337e492a5555d8e17a51c911ff1f02635be15",
+         "type": "github"
+       },
+       "original": {
+diff --git a/flake.nix b/flake.nix
+index 4414c10..26d217b 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -27,7 +27,9 @@
+         # Use this shell for developing your app.
+         devShells.default = pkgs.mkShell {
+           buildInputs = [
+-            pkgs.poetry
++            (pkgs.poetry.withPlugins (ps: with ps; [ 
++              poetry-plugin-shell
++            ]))
+             pythonPackages.notebook
+             pythonPackages.ipython
+             pythonPackages.pydantic
+@@ -42,14 +44,13 @@
+           ];
+           shellHook = ''
+             poetry install
+-            exec poetry shell
+           '';
+         };
+ 
+-        packages.default = with pkgs.python311Packages;
++        packages.default = with pkgs.python313Packages;
+           buildPythonPackage rec {
+             pname = "ether-ghost";
+-            version = "0.0.1";
++            version = "0.2.0";
+             pyproject = true;
+ 
+             propagatedBuildInputs = [
+diff --git a/frontend/package.json b/frontend/package.json
+index 453a157..d58d413 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -18,6 +18,7 @@
+     "@codemirror/lang-markdown": "^6.2.5",
+     "@codemirror/lang-php": "^6.0.1",
+     "@codemirror/lang-python": "^6.1.5",
++    "@codemirror/lang-xml": "^6.1.0",
+     "@codemirror/lang-yaml": "^6.1.1",
+     "@codemirror/language": "^6.10.1",
+     "@codemirror/legacy-modes": "^6.4.0",
+@@ -34,6 +35,6 @@
+   },
+   "devDependencies": {
+     "@vitejs/plugin-vue": "^5.0.4",
+-    "vite": "^5.1.6"
++    "vite": "^6.2.3"
+   }
+ }
+diff --git a/frontend/src/assets/FiraCodeNerdFontMono-Regular.ttf b/frontend/src/assets/FiraCodeNerdFontMono-Regular.ttf
+deleted file mode 100644
+index ca18234..0000000
+Binary files a/frontend/src/assets/FiraCodeNerdFontMono-Regular.ttf and /dev/null differ
+diff --git a/frontend/src/assets/MapleMono-NF-CN-Regular.ttf b/frontend/src/assets/MapleMono-NF-CN-Regular.ttf
+new file mode 100644
+index 0000000..3a19639
+Binary files /dev/null and b/frontend/src/assets/MapleMono-NF-CN-Regular.ttf differ
+diff --git a/frontend/src/assets/MapleMono-NF-Regular.ttf b/frontend/src/assets/MapleMono-NF-Regular.ttf
+new file mode 100644
+index 0000000..c9d67c6
+Binary files /dev/null and b/frontend/src/assets/MapleMono-NF-Regular.ttf differ
+diff --git a/frontend/src/assets/MapleMono-NF-SemiBold.ttf b/frontend/src/assets/MapleMono-NF-SemiBold.ttf
+new file mode 100644
+index 0000000..a9b5ca9
+Binary files /dev/null and b/frontend/src/assets/MapleMono-NF-SemiBold.ttf differ
+diff --git a/frontend/src/assets/base.css b/frontend/src/assets/base.css
+index 950a1ac..7b0ea82 100644
+--- a/frontend/src/assets/base.css
++++ b/frontend/src/assets/base.css
+@@ -1,11 +1,16 @@
+ @font-face {
+-    font-family: "FiraCode";
+-    src: url("./FiraCodeNerdFontMono-Regular.ttf");
++    font-family: "MapleMono";
++    src: url("./MapleMono-NF-Regular.ttf");
++}
++
++@font-face {
++    font-family: "MapleMono SemiBold";
++    src: url("./MapleMono-NF-SemiBold.ttf");
+ }
+ 
+ * {
+     box-sizing: border-box;
+-    font-family: "FiraCode", "Microsoft Yahei", "San Francisco", "Helvetica", 'Courier New', Courier, monospace;
++    font-family: "MapleMono", "Microsoft Yahei", "San Francisco", "Helvetica", 'Courier New', Courier, monospace;
+ }
+ 
+ :root {
+@@ -15,6 +20,13 @@
+     --blue: #28ebff;
+     --white: #b1cbd5;
+     --border-color-grey: #38404c;
++
++    --color-java: #b07219;
++    --color-javascript: #f7e018;
++    --color-php: #8993be;
++    --color-python: #3572A5;
++    --color-shell: #89e051;
++
+ }
+ 
+ [data-theme="white"],
+diff --git a/frontend/src/assets/utils.js b/frontend/src/assets/utils.js
+index 5b61291..8524e75 100644
+--- a/frontend/src/assets/utils.js
++++ b/frontend/src/assets/utils.js
+@@ -152,4 +152,35 @@ export function readableFileSize(fileSize) {
+     }
+     fileSize /= diff
+   }
++}
++
++export function ClickMenuManagerDualLayer(items, handleSelected) {
++  const showClickMenu = ref(false)
++  const clickMenuX = ref(0)
++  const clickMenuY = ref(0)
++
++  function onShowClickMenu(event) {
++    event.preventDefault()
++    showClickMenu.value = true
++    clickMenuX.value = event.clientX;
++    clickMenuY.value = event.clientY;
++  }
++  function onclickEvent(item) {
++    // 注意：对于有子菜单的项，item.children存在时应该由组件处理展开，不触发handleSelected
++    // 只有当项没有children或者子项被点击时才触发handleSelected
++    showClickMenu.value = false
++    handleSelected(item)
++  }
++  function onRemove(_) {
++    showClickMenu.value = false
++  }
++  return {
++    "items": shallowRef(items),
++    "show": showClickMenu,
++    "onshow": onShowClickMenu,
++    "onclick": onclickEvent,
++    "onremove": onRemove,
++    "x": clickMenuX,
++    "y": clickMenuY,
++  }
+ }
+\ No newline at end of file
+diff --git a/frontend/src/assets/vue-web-terminal.css b/frontend/src/assets/vue-web-terminal.css
+index 08f2955..402b32b 100644
+--- a/frontend/src/assets/vue-web-terminal.css
++++ b/frontend/src/assets/vue-web-terminal.css
+@@ -57,7 +57,7 @@
+ 
+ .t-window * {
+   /* font-family: Monaco, Lucida Console, monospace; */
+-  font-family: 'FiraCode', 'Courier New', Courier, monospace !important;
++  font-family: 'MapleMono', 'Courier New', Courier, monospace !important;
+   /* font-variant-ligatures: none; */
+ }
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index b204671..c25482a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,6 +1,6 @@
+ [tool.poetry]
+ name = "ether_ghost"
+-version = "0.1.2"
++version = "0.2.0"
+ description = ""
+ authors = ["Marven11 <110723864+Marven11@users.noreply.github.com>"]
+ readme = "README.md"
+@@ -11,6 +11,7 @@ include = [
+ 
+ [tool.poetry.scripts]
+ ether_ghost = "ether_ghost.__main__:main"
++build-frontend = "script.build_frontend:build_frontend"
+ 
+ [tool.poetry.dependencies]
+ python = "^3.8"
+@@ -21,13 +22,14 @@ pycryptodome = "*"
+ sqlalchemy = "*"
+ uvicorn = "*"
+ sqlalchemy-utils = "*"
+-httpx = {extras = ["socks"], version = "^0.27.0"}
++httpx = {extras = ["socks"], version = "*"}
+ chardet = "^5.2.0"
+-python-multipart = "^0.0.9"
++python-multipart = "*"
+ 
+ [tool.poetry.group.dev.dependencies]
+ ipykernel = "^6.29.0"
+ mypy = "^1.8.0"
++pyright = "^1.1.407"
+ 
+ [build-system]
+ requires = ["poetry-core"]
+diff --git a/script/__init__.py b/script/__init__.py
+new file mode 100644
+index 0000000..63134f7
+--- /dev/null
++++ b/script/__init__.py
+@@ -0,0 +1 @@
++# Script package for EtherGhost
+diff --git a/script/build.sh b/script/build.sh
+new file mode 100644
+index 0000000..164ba9f
+--- /dev/null
++++ b/script/build.sh
+@@ -0,0 +1,6 @@
++cd frontend/
++npm install
++npm run build
++rm ../public -rf
++mv dist ../public
++cd ../public
+diff --git a/script/build_frontend.py b/script/build_frontend.py
+new file mode 100644
+index 0000000..daf587b
+--- /dev/null
++++ b/script/build_frontend.py
+@@ -0,0 +1,40 @@
++#!/usr/bin/env python3
++"""
++构建前端脚本
++
++在poetry build前自动运行此脚本构建前端
++"""
++
++import subprocess
++import sys
++import os
++
++def build_frontend() -> int:
++    """运行前端构建脚本"""
++    print("构建前端...")
++    script_path = os.path.join(os.path.dirname(__file__), "build.sh")
++    
++    try:
++        result = subprocess.run(["bash", script_path], 
++                              capture_output=True, 
++                              text=True,
++                              cwd=os.path.dirname(os.path.dirname(__file__)))
++        print(result.stdout)
++        if result.stderr:
++            print(f"警告: {result.stderr}", file=sys.stderr)
++        
++        if result.returncode != 0:
++            print(f"构建失败，退出码: {result.returncode}", file=sys.stderr)
++            return result.returncode
++            
++        print("前端构建完成!")
++        return 0
++    except FileNotFoundError:
++        print(f"错误: 找不到构建脚本 {script_path}", file=sys.stderr)
++        return 1
++    except Exception as e:
++        print(f"错误: {e}", file=sys.stderr)
++        return 1
++
++if __name__ == "__main__":
++    sys.exit(build_frontend())
