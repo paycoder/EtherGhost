@@ -148,3 +148,39 @@ jobs:
         run: |
           echo "Checking for emoji in changed Python code files..."
           python3 .gitea/scripts/check_code_emoji.py
+
+  build-exe:
+    needs: test
+    runs-on: debian-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Wine environment
+        run: bash .gitea/scripts/setup_wine_pyinstaller.sh
+
+      - name: Install project and build EXE
+        run: |
+          export PATH="/usr/local/bin:$PATH"
+          wine-pip install poetry-core
+          wine-pip install --no-build-isolation .
+          wine-pyinstaller \
+            --add-data "ether_ghost/utils/eng_words_map.json;ether_ghost/utils" \
+            --add-data "ether_ghost/utils/phone_5.json;ether_ghost/utils" \
+            --add-data "ether_ghost/sessions/Payload.java;ether_ghost/sessions" \
+            --add-data "ether_ghost/public;ether_ghost/public" \
+            --add-data "ether_ghost/vessel_php/client.php;ether_ghost/vessel_php" \
+            --add-data "ether_ghost/vessel_php/server.php;ether_ghost/vessel_php" \
+            --onefile \
+            --name ether_ghost \
+            run_ether_ghost.py
+
+      - name: Upload artifact
+        env:
+          GITEA_TOKEN: ${{ github.token }}
+        run: |
+          curl -X PUT \
+            "${{ github.server_url }}/api/v1/packages/${{ github.repository_owner }}/generic/ether-ghost/build-${{ github.sha }}/ether_ghost.exe" \
+            -H "Authorization: token ${{ github.token }}" \
+            --upload-file dist/ether_ghost.exe
+          echo "Uploaded to package registry: ether-ghost/build-${{ github.sha }}"
