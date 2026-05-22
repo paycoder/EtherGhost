@@ -1,6 +1,7 @@
 from .base import (
     SessionInterface,
     PHPSessionInterface,
+    ProcessProtocol,
     session_type_info,
     OptionGroup,
 )

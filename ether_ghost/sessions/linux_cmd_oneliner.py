@@ -254,6 +254,16 @@ class LinuxCmdOneLiner:
     async def get_pwd(self):
         return (await self.submit("pwd")).strip()
 
+    async def create_process(
+        self,
+        argv: t.List[str],
+        overrides_env: t.Union[t.Dict[str, str], None] = None,
+    ) -> "ProcessProtocol":
+        raise NotImplementedError(
+            "Linux CMD session暂不支持创建进程，"
+            "需要参考 http://dell-nixos.mora-goldeye.ts.net:3000/Marven11/LinHai/src/branch/main/linhai/machine_control/bash_host/process.py 实现"
+        )
+
     async def _list_dir(self, dir_path: str) -> t.Union[t.List[DirectoryEntry], None]:
         # 不仅列出文件夹，在给定的是文件时给出文件的详细信息
 

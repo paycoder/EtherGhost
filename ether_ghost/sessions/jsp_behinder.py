@@ -431,6 +431,13 @@ class JSPWebshellBehinderAES:
     async def get_pwd(self) -> str:
         return await self.submit_code("getPwd()")
 
+    async def create_process(
+        self,
+        argv: t.List[str],
+        overrides_env: t.Union[t.Dict[str, str], None] = None,
+    ) -> "ProcessProtocol":
+        raise NotImplementedError("JSP session暂不支持创建进程")
+
     async def send_http_request(
         self,
         url: str,

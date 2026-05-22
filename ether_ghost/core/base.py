@@ -7,6 +7,35 @@ from ..utils.db import get_settings
 
 import httpx
 
+
+class ProcessProtocol(t.Protocol):
+    """进程协议，参考subprocess.Popen设计"""
+
+    @property
+    def pid(self) -> t.Union[int, str]:
+        """获取进程的PID"""
+        ...
+
+    async def send_signal(self, sig: int) -> None:
+        """向进程发送信号，如signal.SIGKILL"""
+        ...
+
+    async def write_stdin(self, data: bytes) -> None:
+        """向进程的标准输入写入数据"""
+        ...
+
+    async def read_stdout_stderr(self) -> t.Tuple[bytes, bytes]:
+        """同时读取stdout和stderr"""
+        ...
+
+    async def wait(self, timeout: float) -> t.Union[int, None]:
+        """等待进程结束，必须指定超时时间
+
+        Returns: 进程退出码，超时时返回None
+        """
+        ...
+
+
 USER_AGENT = random_user_agent()
 
 
@@ -151,6 +180,24 @@ class SessionInterface:
         data: t.Optional[t.Union[str, bytes]] = None,
     ) -> HttpResponseDict:
         """通过受控端发送HTTP请求"""
+        raise NotImplementedError()
+
+    async def create_process(
+        self,
+        argv: t.List[str],
+        overrides_env: t.Union[t.Dict[str, str], None] = None,
+    ) -> ProcessProtocol:
+        """创建一个持续运行的进程
+
+        默认继承当前环境变量，可以使用overrides_env覆盖环境变量。
+
+        Args:
+            argv: 进程参数列表
+            overrides_env: 覆盖的环境变量，None表示不覆盖
+
+        Returns:
+            兼容ProcessProtocol的进程对象
+        """
         raise NotImplementedError()
 
 

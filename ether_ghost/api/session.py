@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from .. import session_manager, session_types, session_connector
-from ..core import SessionInterface, PHPSessionInterface
+from ..core import SessionInterface, PHPSessionInterface, ProcessProtocol
 from ..utils import db
 from ..core import SessionException, UserError
 from .. import file_transfer_status
@@ -25,9 +25,10 @@ from ..vessel_php.main import start_vessel_server
 
 from .base import write_temp_blob
 
-
 logger = logging.getLogger("main")
 router = APIRouter()
+
+processes: t.Dict[UUID, ProcessProtocol] = {}
 
 
 def remote_path(filepath: str) -> PurePath:
@@ -367,6 +368,19 @@ class SendHttpRequestRequest(BaseModel):
     data_b64: t.Union[str, None] = None
 
 
+class CreateProcessRequest(BaseModel):
+    argv: t.List[str]
+    overrides_env: t.Union[t.Dict[str, str], None] = None
+
+
+class SendSignalRequest(BaseModel):
+    signal: int
+
+
+class WriteStdinRequest(BaseModel):
+    data_b64: str
+
+
 @router.post("/session/{session_id}/send_http_request")
 @catch_user_error
 async def session_send_http_request(
@@ -430,3 +444,69 @@ async def delete_session(session_id: UUID):
         return {"code": -400, "msg": "没有这个session"}
     await session_manager.delete_session_info_by_id(session_id)
     return {"code": 0, "data": True}
+
+
+def _get_process(process_id: UUID) -> ProcessProtocol:
+    process = processes.get(process_id)
+    if process is None:
+        raise UserError("没有这个进程")
+    return process
+
+
+@router.post("/session/{session_id}/process")
+@catch_user_error
+async def create_process(session_id: UUID, req: CreateProcessRequest):
+    """创建进程"""
+    session: SessionInterface = session_manager.get_session_by_id(session_id)
+    process = await session.create_process(req.argv, req.overrides_env)
+    process_id = uuid4()
+    processes[process_id] = process
+    return {
+        "code": 0,
+        "data": {
+            "process_id": process_id,
+            "pid": process.pid,
+        },
+    }
+
+
+@router.post("/process/{process_id}/send_signal")
+@catch_user_error
+async def process_send_signal(process_id: UUID, req: SendSignalRequest):
+    """向进程发送信号"""
+    process = _get_process(process_id)
+    await process.send_signal(req.signal)
+    return {"code": 0, "data": True}
+
+
+@router.post("/process/{process_id}/write_stdin")
+@catch_user_error
+async def process_write_stdin(process_id: UUID, req: WriteStdinRequest):
+    """向进程标准输入写入数据"""
+    process = _get_process(process_id)
+    await process.write_stdin(base64.b64decode(req.data_b64))
+    return {"code": 0, "data": True}
+
+
+@router.get("/process/{process_id}/read_stdout_stderr")
+@catch_user_error
+async def process_read_stdout_stderr(process_id: UUID):
+    """读取进程的stdout和stderr"""
+    process = _get_process(process_id)
+    stdout, stderr = await process.read_stdout_stderr()
+    return {
+        "code": 0,
+        "data": {
+            "stdout": base64.b64encode(stdout).decode(),
+            "stderr": base64.b64encode(stderr).decode(),
+        },
+    }
+
+
+@router.get("/process/{process_id}/wait")
+@catch_user_error
+async def process_wait(process_id: UUID, timeout: float):
+    """等待进程结束"""
+    process = _get_process(process_id)
+    returncode = await process.wait(timeout)
+    return {"code": 0, "data": {"returncode": returncode}}

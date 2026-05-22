@@ -1275,6 +1275,15 @@ class PHPWebshellActions(PHPSessionInterface):
         )
         return await self.submit_http(code)
 
+    async def create_process(
+        self,
+        argv: t.List[str],
+        overrides_env: t.Union[t.Dict[str, str], None] = None,
+    ) -> "ProcessProtocol":
+        raise NotImplementedError(
+            "PHP session暂不支持创建进程，需要使用当前项目的vessel（TCP代理）启动进程，可能需要增强vessel的实现"
+        )
+
     async def submit(self, payload: str) -> str:
         raise NotImplementedError("子类提供这个函数以驱动这些Actions函数")
 
