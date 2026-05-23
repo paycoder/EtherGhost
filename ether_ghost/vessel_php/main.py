@@ -30,7 +30,11 @@ def xor_encode(text: str, key: str):
     )
 
 
-async def start_vessel_server(session: PHPSessionInterface, timeout=10):
+async def start_vessel_server(
+    session: PHPSessionInterface,
+    server_session: t.Union[PHPSessionInterface, None] = None,
+    timeout=10,
+):
     code = (
         VESSEL_SERVER_SRC.read_text().removeprefix("<?php").strip().replace("    ", "")
     )
@@ -53,18 +57,28 @@ echo json_encode($_SESSION['{vessel_client_store}']);
     if json.loads(stored_session_value) != vessel_client_store:
         raise exceptions.TargetError("目标的PHP环境不支持Session!")
 
-    # 几乎一定会timeout， 因为vessel会一直运行
+    php_session_id = None
+    if server_session is not None:
+        php_session_id = await session.php_eval("echo session_id();")
+
+    target_session = server_session if server_session is not None else session
+
     async def start_vessel_request():
         try:
-            _, vessel_server_resp = await session.php_eval_beforebody(
-                code
+            session_id_prefix = (
+                f"session_id({php_session_id!r});\n" if php_session_id else ""
+            )
+            _, vessel_server_resp = await target_session.php_eval_beforebody(
+                session_id_prefix
+                + code
                 + f"\n(new VesselServer()) -> serve_over_session('{vessel_session_key}');"
             )
             logger.debug(f"Vessel server response: {vessel_server_resp}")
         except Exception:
             pass
 
-    request_task = asyncio.create_task(start_vessel_request())
+    loop = asyncio.get_running_loop()
+    request_task = loop.create_task(start_vessel_request())
 
     vessel_client = VESSEL_CLIENT_SRC.read_bytes().removeprefix(b"<?php")
     xor_encode_key = "".join(random.choices(string.ascii_letters + string.digits, k=32))

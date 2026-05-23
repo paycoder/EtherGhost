@@ -31,11 +31,17 @@ class VesselServer
             2 => array("pipe", "w")
         );
         $cwd = getcwd();
-        $env = array();
+        $env = null;
+        if (count($args) > 1 && $args[1] !== null) {
+            $parent_env = getenv();
+            $env = is_array($parent_env) ? array_merge($parent_env, $args[1]) : $args[1];
+        }
         $proc = proc_open($args[0], $descriptorspec, $pipes, $cwd, $env);
         if (!is_resource($proc)) {
             throw new Exception("Error: spawn failed");
         }
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
         $key = rand(0, 100000);
         while (isset($this->child_shells[$key])) {
             $key = rand(0, 100000);
@@ -69,6 +75,30 @@ class VesselServer
         fclose($pipes[$args[1]]);
     }
 
+
+    function child_shell_read_stderr($args)
+    {
+        $pipes = $this->child_shells[$args[0]]["pipes"];
+        return base64_encode(fread($pipes[2], $args[1]));
+    }
+
+    function child_shell_send_signal($args)
+    {
+        if (!function_exists("proc_terminate")) {
+            throw new Exception("Error: proc_terminate not exists");
+        }
+        $proc = $this->child_shells[$args[0]]["proc"];
+        return proc_terminate($proc, $args[1]);
+    }
+
+    function child_shell_get_status($args)
+    {
+        if (!isset($this->child_shells[$args[0]])) {
+            throw new Exception("shell not found");
+        }
+        $proc = $this->child_shells[$args[0]]["proc"];
+        return proc_get_status($proc);
+    }
 
     function child_shell_exit($args)
     {

@@ -55,16 +55,6 @@ class TestSessionInterfaceCreateProcess(unittest.TestCase):
             )
 
 
-class TestPHPCreateProcess(unittest.TestCase):
-    def test_php_create_process_not_implemented(self):
-        from ether_ghost.core.php_session_common import PHPWebshellActions
-
-        php = PHPWebshellActions.__new__(PHPWebshellActions)
-        with self.assertRaises(NotImplementedError) as ctx:
-            asyncio.get_event_loop().run_until_complete(php.create_process(["ls"]))
-        self.assertIn("vessel", str(ctx.exception))
-
-
 class TestLinuxCmdCreateProcess(unittest.TestCase):
     def test_linux_create_process_not_implemented(self):
         from ether_ghost.sessions.linux_cmd_oneliner import LinuxCmdOneLiner
