@@ -16,6 +16,7 @@ from ..core.base import (
     DirectoryEntry,
     BasicInfoEntry,
     HttpResponseDict,
+    ProcessProtocol,
     get_http_client,
 )
 
@@ -104,6 +105,79 @@ def parse_file_permission(perm: str):
         digit_bin = "".join("0" if c == "-" else "1" for c in part)
         result += str(int(digit_bin, 2))
     return result
+
+
+class LinuxCmdProcess:
+    def __init__(
+        self,
+        pid: str,
+        proc_dir: str,
+        submit_fn: t.Callable,
+    ):
+        self._pid = pid
+        self._proc_dir = proc_dir
+        self._submit = submit_fn
+        self._stdout_offset: int = 0
+        self._stderr_offset: int = 0
+
+    @property
+    def pid(self) -> t.Union[int, str]:
+        return self._pid
+
+    async def send_signal(self, sig: int) -> None:
+        pid_q = shlex.quote(str(self._pid))
+        await self._submit(
+            f"kill -{sig} {pid_q} 2>/dev/null; "
+            f"pkill -{sig} -P {pid_q} 2>/dev/null; true"
+        )
+
+    async def write_stdin(self, data: bytes) -> None:
+        b64 = base64.b64encode(data).decode()
+        stdin_path = shlex.quote(f"{self._proc_dir}/stdin")
+        await self._submit(f"printf '%s' {b64} | base64 -d >> {stdin_path}")
+
+    async def read_stdout_stderr(self) -> t.Tuple[bytes, bytes]:
+        stdout_path = shlex.quote(f"{self._proc_dir}/stdout")
+        stderr_path = shlex.quote(f"{self._proc_dir}/stderr")
+
+        stdout_data = b""
+        out_cmd = (
+            f"tail -c +{self._stdout_offset + 1} {stdout_path}"
+            " 2>/dev/null | base64 -w0"
+        )
+        out_b64 = (await self._submit(out_cmd)).strip()
+        if out_b64:
+            stdout_data = base64.b64decode(out_b64)
+            self._stdout_offset += len(stdout_data)
+
+        stderr_data = b""
+        err_cmd = (
+            f"tail -c +{self._stderr_offset + 1} {stderr_path}"
+            " 2>/dev/null | base64 -w0"
+        )
+        err_b64 = (await self._submit(err_cmd)).strip()
+        if err_b64:
+            stderr_data = base64.b64decode(err_b64)
+            self._stderr_offset += len(stderr_data)
+
+        return stdout_data, stderr_data
+
+    async def wait(self, timeout: float) -> t.Union[int, None]:
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        rc_path = shlex.quote(f"{self._proc_dir}/rc")
+
+        while True:
+            rc_output = (
+                await self._submit(f"test -f {rc_path} && cat {rc_path} || echo NONE")
+            ).strip()
+            if rc_output != "NONE":
+                return int(rc_output) if rc_output.isdigit() else -1
+
+            if loop.time() >= deadline:
+                return None
+
+            await asyncio.sleep(0.5)
 
 
 @register_session
@@ -258,11 +332,33 @@ class LinuxCmdOneLiner:
         self,
         argv: t.List[str],
         overrides_env: t.Union[t.Dict[str, str], None] = None,
-    ) -> "ProcessProtocol":
-        raise NotImplementedError(
-            "Linux CMD session暂不支持创建进程，"
-            "需要参考 http://dell-nixos.mora-goldeye.ts.net:3000/Marven11/LinHai/src/branch/main/linhai/machine_control/bash_host/process.py 实现"
+    ) -> LinuxCmdProcess:
+        proc_dir = (await self.submit("mktemp -d")).strip()
+        await self.submit(f"mkfifo {shlex.quote(proc_dir + '/stdin')}")
+
+        env_prefix = ""
+        if overrides_env:
+            env_parts = ["env"] + [
+                f"{shlex.quote(k)}={shlex.quote(v)}" for k, v in overrides_env.items()
+            ]
+            env_prefix = " ".join(env_parts) + " "
+
+        cmd = shell_command(argv)
+        stdin_path = shlex.quote(f"{proc_dir}/stdin")
+        stdout_path = shlex.quote(f"{proc_dir}/stdout")
+        stderr_path = shlex.quote(f"{proc_dir}/stderr")
+        rc_path = shlex.quote(f"{proc_dir}/rc")
+
+        setup_cmd = (
+            f"(exec 0<>{stdin_path}; exec 1>{stdout_path}; "
+            f"exec 2>{stderr_path}; {env_prefix}{cmd}; "
+            f"echo $? > {rc_path}) & echo $!"
         )
+
+        output = (await self.submit(setup_cmd)).strip()
+        pid = output.strip()
+
+        return LinuxCmdProcess(pid=pid, proc_dir=proc_dir, submit_fn=self.submit)
 
     async def _list_dir(self, dir_path: str) -> t.Union[t.List[DirectoryEntry], None]:
         # 不仅列出文件夹，在给定的是文件时给出文件的详细信息

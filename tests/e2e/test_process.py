@@ -161,6 +161,30 @@ def session_id(php_server, vessel_php_server, backend_server):
     httpx.delete(f"{BACKEND_URL}/session/{sid}")
 
 
+@pytest.fixture(scope="module")
+def linux_cmd_session_id(php_server, backend_server):
+    sid = str(uuid.uuid4())
+    resp = httpx.post(
+        f"{BACKEND_URL}/update_webshell",
+        json={
+            "session_type": "LINUX_CMD_ONELINER",
+            "name": "e2e_linux_cmd_process_test",
+            "connection": {
+                "url": f"{PHP_URL}/cmd.php",
+                "password": "data",
+                "password_method": "POST",
+            },
+            "session_id": sid,
+            "note": "e2e linux cmd process test",
+            "location": "",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+    yield sid
+    httpx.delete(f"{BACKEND_URL}/session/{sid}")
+
+
 def test_create_process_and_interact(session_id):
     resp = httpx.post(
         f"{BACKEND_URL}/session/{session_id}/process",
@@ -210,3 +234,49 @@ def test_create_process_and_interact(session_id):
     wait_data = wait_resp.json()
     assert wait_data["code"] == 0, f"wait failed: {wait_data}"
     assert wait_data["data"]["returncode"] == 42
+
+
+def test_linux_cmd_create_process(linux_cmd_session_id):
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{linux_cmd_session_id}/process",
+        json={"argv": ["bash", "--norc", "--noprofile"]},
+    )
+    assert resp.status_code == 200, f"Failed to create process: {resp.text}"
+    data = resp.json()
+    assert data["code"] == 0, f"Error: {data}"
+    process_id = data["data"]["process_id"]
+    pid = data["data"]["pid"]
+    assert pid is not None
+
+    time.sleep(0.5)
+
+    cmd = b"echo hello_process\n"
+    resp = httpx.post(
+        f"{BACKEND_URL}/process/{process_id}/write_stdin",
+        json={"data_b64": base64.b64encode(cmd).decode()},
+    )
+    assert resp.status_code == 200
+
+    time.sleep(1.0)
+    resp = httpx.get(f"{BACKEND_URL}/process/{process_id}/read_stdout_stderr")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0
+    stdout = base64.b64decode(data["data"]["stdout"])
+    assert b"hello_process" in stdout
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/process/{process_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"exit 42\n").decode()},
+    )
+    assert resp.status_code == 200
+
+    time.sleep(0.5)
+    resp = httpx.get(
+        f"{BACKEND_URL}/process/{process_id}/wait",
+        params={"timeout": 5},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0
+    assert data["data"]["returncode"] == 42

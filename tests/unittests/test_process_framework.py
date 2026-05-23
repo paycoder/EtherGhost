@@ -56,13 +56,15 @@ class TestSessionInterfaceCreateProcess(unittest.TestCase):
 
 
 class TestLinuxCmdCreateProcess(unittest.TestCase):
-    def test_linux_create_process_not_implemented(self):
-        from ether_ghost.sessions.linux_cmd_oneliner import LinuxCmdOneLiner
+    def test_linux_cmd_process_implements_protocol(self):
+        from ether_ghost.sessions.linux_cmd_oneliner import LinuxCmdProcess
 
-        linux = LinuxCmdOneLiner.__new__(LinuxCmdOneLiner)
-        with self.assertRaises(NotImplementedError) as ctx:
-            asyncio.get_event_loop().run_until_complete(linux.create_process(["ls"]))
-        self.assertIn("LinHai", str(ctx.exception))
+        process = LinuxCmdProcess(pid="1", proc_dir="/tmp", submit_fn=lambda: None)
+        self.assertIsInstance(process.pid, str)
+        self.assertTrue(callable(process.send_signal))
+        self.assertTrue(callable(process.write_stdin))
+        self.assertTrue(callable(process.read_stdout_stderr))
+        self.assertTrue(callable(process.wait))
 
 
 class TestJSPCreateProcess(unittest.TestCase):
