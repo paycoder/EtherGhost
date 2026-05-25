@@ -121,6 +121,20 @@ class SessionInterface:
         """保存文件的内容，内容是一个字节序列，不是已经解码的字符串"""
         raise NotImplementedError()
 
+    async def modify_file(
+        self,
+        filepath: str,
+        old_str: str,
+        new_str: str,
+        replace_strategy: t.Union[str, None] = None,
+    ) -> None:
+        """修改文件内容，将old_str替换为new_str
+
+        replace_strategy: "once"仅替换第一次出现, "all"替换所有,
+        None(默认)验证恰好出现一次后替换
+        """
+        raise NotImplementedError()
+
     async def delete_file(self, filepath: str) -> bool:
         """删除文件"""
         raise NotImplementedError()

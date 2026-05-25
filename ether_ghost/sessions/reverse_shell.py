@@ -229,6 +229,26 @@ class ReverseShellSession(SessionInterface):
         result = await self.submit(cmd)
         return result.strip() == "finished"
 
+    async def modify_file(
+        self,
+        filepath: str,
+        old_str: str,
+        new_str: str,
+        replace_strategy: t.Union[str, None] = None,
+    ) -> None:
+        content = await self.get_file_contents(filepath)
+        text = content.decode("utf-8", errors="replace")
+        count = text.count(old_str)
+        if replace_strategy is None and count != 1:
+            raise exceptions.FileError(f"旧字符串出现了{count}次，不符合恰好一次的要求")
+        if count == 0:
+            raise exceptions.FileError("在文件中找不到旧字符串")
+        if replace_strategy == "once":
+            text = text.replace(old_str, new_str, 1)
+        else:
+            text = text.replace(old_str, new_str)
+        await self.put_file_contents(filepath, text.encode("utf-8"))
+
     async def delete_file(self, filepath: str):
         cmd = shell_command(["rm", filepath]) + " && echo finished"
         result = await self.submit(cmd)

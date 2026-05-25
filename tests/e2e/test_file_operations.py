@@ -258,3 +258,119 @@ def test_download_file(session_id, test_dir):
     data = resp.json()
     assert data["code"] == 0
     assert "file_id" in data["data"]
+
+
+def test_modify_file_once(session_id, test_dir):
+    content = "line1\noldline\nline3\noldline\nline5"
+    filepath = f"{test_dir}/test_modify_once.txt"
+    with open(filepath, "w") as f:
+        f.write(content)
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/modify_file",
+        json={
+            "filepath": filepath,
+            "old_str": "oldline",
+            "new_str": "newline",
+            "replace_strategy": "once",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0
+
+    with open(filepath) as f:
+        result = f.read()
+    assert result == "line1\nnewline\nline3\noldline\nline5"
+
+
+def test_modify_file_all(session_id, test_dir):
+    content = "line1\noldline\nline3\noldline\nline5"
+    filepath = f"{test_dir}/test_modify_all.txt"
+    with open(filepath, "w") as f:
+        f.write(content)
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/modify_file",
+        json={
+            "filepath": filepath,
+            "old_str": "oldline",
+            "new_str": "newline",
+            "replace_strategy": "all",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0
+
+    with open(filepath) as f:
+        result = f.read()
+    assert result == "line1\nnewline\nline3\nnewline\nline5"
+
+
+def test_modify_file_default_exact_once(session_id, test_dir):
+    content = "prefix UNIQUE_MARKER suffix"
+    filepath = f"{test_dir}/test_modify_default.txt"
+    with open(filepath, "w") as f:
+        f.write(content)
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/modify_file",
+        json={
+            "filepath": filepath,
+            "old_str": "UNIQUE_MARKER",
+            "new_str": "REPLACED",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0
+
+    with open(filepath) as f:
+        result = f.read()
+    assert result == "prefix REPLACED suffix"
+
+
+def test_modify_file_default_fails_on_multiple(session_id, test_dir):
+    content = "dup dup dup"
+    filepath = f"{test_dir}/test_modify_multi.txt"
+    with open(filepath, "w") as f:
+        f.write(content)
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/modify_file",
+        json={
+            "filepath": filepath,
+            "old_str": "dup",
+            "new_str": "replaced",
+        },
+    )
+    data = resp.json()
+    assert data["code"] != 0
+
+    with open(filepath) as f:
+        result = f.read()
+    assert result == content
+
+
+def test_modify_file_not_found(session_id, test_dir):
+    content = "some random text"
+    filepath = f"{test_dir}/test_modify_nf.txt"
+    with open(filepath, "w") as f:
+        f.write(content)
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/modify_file",
+        json={
+            "filepath": filepath,
+            "old_str": "NONEXISTENT",
+            "new_str": "replaced",
+            "replace_strategy": "once",
+        },
+    )
+    data = resp.json()
+    assert data["code"] != 0
+
+    with open(filepath) as f:
+        result = f.read()
+    assert result == content

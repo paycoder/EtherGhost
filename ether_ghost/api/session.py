@@ -45,6 +45,13 @@ class FileContentRequest(BaseModel):
     encoding: str
 
 
+class ModifyFileRequest(BaseModel):
+    filepath: str
+    old_str: str
+    new_str: str
+    replace_strategy: t.Union[str, None] = None
+
+
 class PhpCodeRequest(BaseModel):
     code: str
 
@@ -202,6 +209,20 @@ async def session_put_file_contents(session_id: UUID, request: FileContentReques
     content = request.text.encode(request.encoding)
     success = await session.put_file_contents(str(path), content)
     return {"code": 0, "data": success}
+
+
+@router.post("/session/{session_id}/modify_file")
+@catch_user_error
+async def session_modify_file(session_id: UUID, request: ModifyFileRequest):
+    """使用session修改文件内容"""
+    session: SessionInterface = session_manager.get_session_by_id(session_id)
+    await session.modify_file(
+        request.filepath,
+        request.old_str,
+        request.new_str,
+        request.replace_strategy,
+    )
+    return {"code": 0, "data": True}
 
 
 @router.post("/session/{session_id}/upload_file")

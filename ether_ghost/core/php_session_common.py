@@ -165,6 +165,37 @@ if(!is_file($filePath) && !is_writeable(dirname($filePath))) {
 """
 )
 
+MODIFY_FILE_PHP = compress_phpcode_template(
+    """
+$filePath = {filepath};
+$oldStr = {old_str};
+$newStr = {new_str};
+$strategy = {strategy};
+if(!is_file($filePath)) {
+    decoder_echo("WRONG_NOT_FILE");
+} else if(!is_readable($filePath) || !is_writeable($filePath)) {
+    decoder_echo("WRONG_NO_PERMISSION");
+} else {
+    $content = file_get_contents($filePath);
+    $count = substr_count($content, $oldStr);
+    if($strategy === null && $count !== 1) {
+        decoder_echo("WRONG_COUNT_" . $count);
+    } else if($count === 0) {
+        decoder_echo("WRONG_NOT_FOUND");
+    } else if($strategy === "all") {
+        $newContent = str_replace($oldStr, $newStr, $content);
+        file_put_contents($filePath, $newContent);
+        decoder_echo("SUCCESS");
+    } else {
+        $pos = strpos($content, $oldStr);
+        $newContent = substr_replace($content, $newStr, $pos, strlen($oldStr));
+        file_put_contents($filePath, $newContent);
+        decoder_echo("SUCCESS");
+    }
+}
+"""
+)
+
 DELETE_FILE_PHP = compress_phpcode_template(
     """
 $filePath = {filepath};
@@ -956,6 +987,36 @@ class PHPWebshellActions(PHPSessionInterface):
         if result == "WRONG_NO_PERMISSION":
             raise exceptions.FileError("没有权限保存这个文件")
         return result == "SUCCESS"
+
+    async def modify_file(
+        self,
+        filepath: str,
+        old_str: str,
+        new_str: str,
+        replace_strategy: t.Union[str, None] = None,
+    ) -> None:
+        strategy_php = (
+            "null" if replace_strategy is None else string_repr(replace_strategy)
+        )
+        php_code = format_phpcode(
+            MODIFY_FILE_PHP,
+            filepath=string_repr(filepath),
+            old_str=string_repr(old_str),
+            new_str=string_repr(new_str),
+            strategy=strategy_php,
+        )
+        result = await self.submit(php_code)
+        if result == "WRONG_NOT_FILE":
+            raise exceptions.FileError("目标不是一个文件")
+        if result == "WRONG_NO_PERMISSION":
+            raise exceptions.FileError("没有权限修改这个文件")
+        if result.startswith("WRONG_COUNT_"):
+            count = result.removeprefix("WRONG_COUNT_")
+            raise exceptions.FileError(f"旧字符串出现了{count}次，不符合恰好一次的要求")
+        if result == "WRONG_NOT_FOUND":
+            raise exceptions.FileError("在文件中找不到旧字符串")
+        if result != "SUCCESS":
+            raise exceptions.FileError("因未知原因修改文件失败")
 
     async def delete_file(self, filepath: str) -> bool:
         php_code = format_phpcode(DELETE_FILE_PHP, filepath=string_repr(filepath))
