@@ -83,6 +83,18 @@ jobs:
             echo "No Python files changed in this PR, skipping black check"
           fi
 
+      - name: Setup SSH test environment
+        run: |
+          apt-get install -y openssh-server
+          useradd -m -s /bin/bash testssh
+          echo "testssh:testssh123" | chpasswd
+          sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          mkdir -p /run/sshd
+          /usr/sbin/sshd
+          for i in $(seq 1 10); do sshd -t && break; sleep 0.5; done
+          for i in $(seq 1 10); do ss -tlnp | grep -q ':22 ' && break; sleep 0.5; done
+
       - name: Run e2e tests
         env:
           PYTHONPATH: $PWD
