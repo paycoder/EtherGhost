@@ -1,3 +1,4 @@
+import base64
 import os
 import shutil
 import subprocess
@@ -373,3 +374,54 @@ def test_send_http_request_post(session_id, target_server):
     assert send_resp.status_code == 200
     result = send_resp.json()
     assert result["code"] == 0, f"send_http_request POST failed: {result}"
+
+
+def test_create_process_and_interact(session_id):
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/process",
+        json={"argv": ["bash", "--norc", "--noprofile"]},
+        timeout=60,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0, f"create_process failed: {data}"
+    process_id = data["data"]["process_id"]
+
+    time.sleep(0.5)
+
+    write_resp = httpx.post(
+        f"{BACKEND_URL}/process/{process_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"echo hello_from_bash\n").decode()},
+        timeout=30,
+    )
+    assert write_resp.status_code == 200
+    assert write_resp.json()["code"] == 0
+
+    time.sleep(1.0)
+
+    read_resp = httpx.get(
+        f"{BACKEND_URL}/process/{process_id}/read_stdout_stderr",
+        timeout=30,
+    )
+    assert read_resp.status_code == 200
+    read_data = read_resp.json()
+    assert read_data["code"] == 0, f"read failed: {read_data}"
+    stdout = base64.b64decode(read_data["data"]["stdout"])
+    assert b"hello_from_bash" in stdout, f"stdout: {stdout!r}"
+
+    exit_resp = httpx.post(
+        f"{BACKEND_URL}/process/{process_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"exit 42\n").decode()},
+        timeout=30,
+    )
+    assert exit_resp.status_code == 200
+
+    wait_resp = httpx.get(
+        f"{BACKEND_URL}/process/{process_id}/wait",
+        params={"timeout": 10},
+        timeout=30,
+    )
+    assert wait_resp.status_code == 200
+    wait_data = wait_resp.json()
+    assert wait_data["code"] == 0, f"wait failed: {wait_data}"
+    assert wait_data["data"]["returncode"] == 42
