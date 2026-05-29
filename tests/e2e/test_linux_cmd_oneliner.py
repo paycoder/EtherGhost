@@ -425,3 +425,53 @@ def test_create_process_and_interact(session_id):
     wait_data = wait_resp.json()
     assert wait_data["code"] == 0, f"wait failed: {wait_data}"
     assert wait_data["data"]["returncode"] == 42
+
+
+@pytest.fixture(scope="module")
+def install_tcp_tools(session_id):
+    resp = httpx.get(
+        f"{BACKEND_URL}/session/{session_id}/execute_cmd",
+        params={"cmd": "apt-get update -qq && apt-get install -y -qq netcat-openbsd"},
+        timeout=120,
+    )
+    assert resp.status_code == 200
+    yield
+
+
+def test_get_send_tcp_support_methods(session_id, install_tcp_tools):
+    resp = httpx.get(f"{BACKEND_URL}/session/{session_id}/supported_send_tcp_methods")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0, f"get_send_tcp_support_methods failed: {data}"
+    methods = data["data"]
+    assert isinstance(methods, list)
+    assert len(methods) > 0, "Expected at least one TCP method (socat or nc)"
+
+
+def test_send_bytes_over_tcp(session_id, target_server, install_tcp_tools):
+    methods_resp = httpx.get(
+        f"{BACKEND_URL}/session/{session_id}/supported_send_tcp_methods"
+    )
+    methods = methods_resp.json()["data"]
+    assert len(methods) > 0
+
+    http_request = (
+        f"GET / HTTP/1.0\r\n" f"Host: {TARGET_HOST}:{TARGET_PORT}\r\n" f"\r\n"
+    ).encode()
+    content_b64 = base64.b64encode(http_request).decode()
+
+    resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/send_bytes_tcp",
+        json={
+            "host": TARGET_HOST,
+            "port": TARGET_PORT,
+            "content_b64": content_b64,
+            "send_method": methods[0],
+        },
+        timeout=30,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["code"] == 0, f"send_bytes_tcp failed: {data}"
+    response_bytes = base64.b64decode(data["data"])
+    assert TARGET_RESPONSE_BODY.encode() in response_bytes

