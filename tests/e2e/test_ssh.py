@@ -532,3 +532,86 @@ def test_ssh_download_file_512kb(session_id, test_dir):
     assert dl_resp.status_code == 200
     actual_md5 = hashlib.md5(dl_resp.content).hexdigest()
     assert actual_md5 == expected_md5, f"MD5 mismatch: {actual_md5} != {expected_md5}"
+
+
+def test_ssh_create_process_alternating(session_id):
+    proc_a_resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/process",
+        json={"argv": ["bash", "--norc", "--noprofile"]},
+        timeout=30,
+    )
+    assert proc_a_resp.status_code == 200
+    proc_a_data = proc_a_resp.json()
+    assert proc_a_data["code"] == 0, f"create process A failed: {proc_a_data}"
+    proc_a_id = proc_a_data["data"]["process_id"]
+
+    proc_b_resp = httpx.post(
+        f"{BACKEND_URL}/session/{session_id}/process",
+        json={"argv": ["bash", "--norc", "--noprofile"]},
+        timeout=30,
+    )
+    assert proc_b_resp.status_code == 200
+    proc_b_data = proc_b_resp.json()
+    assert proc_b_data["code"] == 0, f"create process B failed: {proc_b_data}"
+    proc_b_id = proc_b_data["data"]["process_id"]
+
+    time.sleep(0.5)
+
+    httpx.post(
+        f"{BACKEND_URL}/process/{proc_a_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"echo round1_A\n").decode()},
+        timeout=30,
+    )
+    time.sleep(0.5)
+    resp_a1 = httpx.get(
+        f"{BACKEND_URL}/process/{proc_a_id}/read_stdout_stderr", timeout=30
+    )
+    stdout_a1 = base64.b64decode(resp_a1.json()["data"]["stdout"])
+    assert b"round1_A" in stdout_a1
+
+    httpx.post(
+        f"{BACKEND_URL}/process/{proc_b_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"echo round1_B\n").decode()},
+        timeout=30,
+    )
+    time.sleep(0.5)
+    resp_b1 = httpx.get(
+        f"{BACKEND_URL}/process/{proc_b_id}/read_stdout_stderr", timeout=30
+    )
+    stdout_b1 = base64.b64decode(resp_b1.json()["data"]["stdout"])
+    assert b"round1_B" in stdout_b1
+
+    httpx.post(
+        f"{BACKEND_URL}/process/{proc_a_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"echo round2_A\n").decode()},
+        timeout=30,
+    )
+    time.sleep(0.5)
+    resp_a2 = httpx.get(
+        f"{BACKEND_URL}/process/{proc_a_id}/read_stdout_stderr", timeout=30
+    )
+    stdout_a2 = base64.b64decode(resp_a2.json()["data"]["stdout"])
+    assert b"round2_A" in stdout_a2
+
+    httpx.post(
+        f"{BACKEND_URL}/process/{proc_b_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"echo round2_B\n").decode()},
+        timeout=30,
+    )
+    time.sleep(0.5)
+    resp_b2 = httpx.get(
+        f"{BACKEND_URL}/process/{proc_b_id}/read_stdout_stderr", timeout=30
+    )
+    stdout_b2 = base64.b64decode(resp_b2.json()["data"]["stdout"])
+    assert b"round2_B" in stdout_b2
+
+    httpx.post(
+        f"{BACKEND_URL}/process/{proc_a_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"exit 0\n").decode()},
+        timeout=30,
+    )
+    httpx.post(
+        f"{BACKEND_URL}/process/{proc_b_id}/write_stdin",
+        json={"data_b64": base64.b64encode(b"exit 0\n").decode()},
+        timeout=30,
+    )

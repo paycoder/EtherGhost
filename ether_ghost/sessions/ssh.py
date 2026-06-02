@@ -15,10 +15,10 @@ from ..core.base import (
     Option,
     OptionGroup,
     HttpResponseDict,
-    ProcessProtocol,
 )
 
-from .linux_shell_helper import LinuxShellHelper
+from .linux_cmd_oneliner import LinuxCmdProcess
+from .linux_shell_helper import LinuxShellHelper, shell_command
 
 logger = logging.getLogger("core.sessions.ssh")
 
@@ -244,8 +244,33 @@ class SSHSession:
         self,
         argv: t.List[str],
         overrides_env: t.Union[t.Dict[str, str], None] = None,
-    ) -> ProcessProtocol:
-        raise NotImplementedError("SSH session暂不支持创建进程")
+    ) -> LinuxCmdProcess:
+        proc_dir = (await self._shell.submit("mktemp -d")).strip()
+        await self._shell.submit(f"mkfifo {shlex.quote(proc_dir + '/stdin')}")
+
+        env_prefix = ""
+        if overrides_env:
+            env_parts = ["env"] + [
+                f"{shlex.quote(k)}={shlex.quote(v)}" for k, v in overrides_env.items()
+            ]
+            env_prefix = " ".join(env_parts) + " "
+
+        cmd = shell_command(argv)
+        stdin_path = shlex.quote(f"{proc_dir}/stdin")
+        stdout_path = shlex.quote(f"{proc_dir}/stdout")
+        stderr_path = shlex.quote(f"{proc_dir}/stderr")
+        rc_path = shlex.quote(f"{proc_dir}/rc")
+
+        setup_cmd = (
+            f"(exec 0<>{stdin_path}; exec 1>{stdout_path}; "
+            f"exec 2>{stderr_path}; {env_prefix}{cmd}; "
+            f"echo $? > {rc_path}) & echo $!"
+        )
+
+        output = (await self._shell.submit(setup_cmd)).strip()
+        pid = output.strip()
+
+        return LinuxCmdProcess(pid=pid, proc_dir=proc_dir, submit_fn=self._shell.submit)
 
     async def send_bytes_over_tcp(
         self,
