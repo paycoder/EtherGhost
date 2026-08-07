@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ether_ghost"
-version = "0.2.5"
+version = "0.2.6"
 description = ""
 authors = ["Marven11 <110723864+Marven11@users.noreply.github.com>"]
 readme = "README.md"
@@ -22,7 +22,7 @@ sqlalchemy = "*"
 uvicorn = "*"
 sqlalchemy-utils = "*"
 httpx = {extras = ["socks"], version = "*"}
-chardet = "^5.2.0"
+chardet = ">=5.2.0,<8"
 python-multipart = "*"
 
 [tool.poetry.group.dev.dependencies]
